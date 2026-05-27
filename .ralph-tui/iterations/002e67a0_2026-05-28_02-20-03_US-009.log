@@ -1,0 +1,71 @@
+# Iteration 9 Log
+
+## Metadata
+
+- **Task ID**: US-009
+- **Task Title**: Systemd Service File
+- **Description**: As an operator, I want a systemd service file for auto-start on boot so that hermes-web-terminal runs reliably in production.
+- **Status**: completed
+- **Task Completed**: Yes
+- **Promise Detected**: Yes
+- **Started At**: 2026-05-27T20:50:03.459Z
+- **Ended At**: 2026-05-27T20:50:47.622Z
+- **Duration**: 44s
+- **Agent**: opencode
+- **Sandbox Mode**: auto
+- **Sandbox Network**: Enabled
+--- RAW OUTPUT ---
+[94m[read][0m
+[94m[glob][0m pattern: [96m**/*.md[0m
+[94m[glob][0m pattern: [96m**/systemd/**[0m
+[94m[read][0m
+[94m[read][0m
+[94m[glob][0m pattern: [96msrc/**/*.py[0m
+[94m[read][0m
+[94m[read][0m
+
+
+Now I'll create the systemd service file and update the README with documentation.
+[94m[bash][0m Create systemd directory $ mkdir -p /Users/nimitbhardwaj/Programs/Projects/hermes-web-terminal/systemd
+[94m[bash][0m Check uv installation $ which uv && uv --version
+[94m[write][0m "[Unit]
+Description=Hermes Web Terminal - Web-based terminal interface with PTY support
+After=network.target
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=5
+User=nimit
+WorkingDirectory=/home/nimit
+
+... (556 chars)"
+[94m[write][0m "# Environment file for hermes-web-terminal systemd service
+# Copy to /etc/hermes-web-terminal/env and customize values
+
+# Password for authentication (REQUIRED for production)
+HERMES_WEB_TERMINAL_PASS... (364 chars)"
+[94m[write][0m "# Hermes Web Terminal
+
+Web-based terminal interface with PTY support.
+
+## Installation
+
+```bash
+uv pip install hermes-web-terminal
+```
+
+## Systemd Service
+
+### Installation
+
+1. Copy the service file:
+... (1200 chars)"
+[94m[bash][0m Run ruff check $ cd /Users/nimitbhardwaj/Programs/Projects/hermes-web-terminal && uv run ruff check
+[94m[bash][0m Run ruff format check $ cd /Users/nimitbhardwaj/Programs/Projects/hermes-web-terminal && uv run ruff format --check
+[94m[bash][0m Run pyright type check $ cd /Users/nimitbhardwaj/Programs/Projects/hermes-web-terminal && uv run pyright
+[94m[edit][0m
+[94m[bash][0m Check git status $ cd /Users/nimitbhardwaj/Programs/Projects/hermes-web-terminal && git status
+
+
+<promise>COMPLETE</promise>

@@ -1,0 +1,10 @@
+configVersion = "2.1"
+maxIterations = 30
+agent = "opencode"
+tracker = "json"
+autoCommit = false
+envPassthrough = [ "*_API_KEY" ]
+subagentTracingDetail = "off"
+
+[agentOptions]
+[trackerOptions]

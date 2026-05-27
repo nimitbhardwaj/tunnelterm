@@ -1,0 +1,12 @@
+{
+  "executionEnvironments": [
+    {
+      "root": "src"
+    }
+  ],
+  "typeCheckingMode": "basic",
+  "pythonVersion": "3.12",
+  "extraPaths": [
+    ".venv/lib/python3.12/site-packages"
+  ]
+}

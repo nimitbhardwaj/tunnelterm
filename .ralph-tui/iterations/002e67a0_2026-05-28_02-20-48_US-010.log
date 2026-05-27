@@ -1,0 +1,55 @@
+# Iteration 10 Log
+
+## Metadata
+
+- **Task ID**: US-010
+- **Task Title**: README Documentation
+- **Description**: As a developer, I want comprehensive README documentation so that users know how to install and use hermes-web-terminal.
+- **Status**: completed
+- **Task Completed**: Yes
+- **Promise Detected**: Yes
+- **Started At**: 2026-05-27T20:50:48.632Z
+- **Ended At**: 2026-05-27T20:51:51.056Z
+- **Duration**: 1m 2s
+- **Agent**: opencode
+- **Sandbox Mode**: auto
+- **Sandbox Network**: Enabled
+--- RAW OUTPUT ---
+[94m[read][0m
+[94m[glob][0m pattern: [96mREADME*[0m
+[94m[glob][0m pattern: [96m**/README*[0m
+[94m[read][0m
+[94m[glob][0m pattern: [96m**/*.toml[0m
+[94m[glob][0m pattern: [96msystemd/*[0m
+[94m[read][0m
+[94m[read][0m
+[94m[read][0m
+[94m[read][0m
+[94m[read][0m
+Now I'll update the README.md to include all the required documentation sections:
+[94m[write][0m "# Hermes Web Terminal
+
+Web-based terminal interface with PTY support.
+
+## Installation
+
+### Using uvx (no install required)
+
+```bash
+uvx hermes-web-terminal
+```
+
+### Using uv run
+
+```bash
+uv run herme... (2682 chars)"
+Now let me run the quality checks:
+[94m[bash][0m Run ruff check $ cd /Users/nimitbhardwaj/Programs/Projects/hermes-web-terminal && uv run ruff check
+[94m[bash][0m Run ruff format check $ cd /Users/nimitbhardwaj/Programs/Projects/hermes-web-terminal && uv run ruff format --check
+[94m[bash][0m Run pyright typecheck $ cd /Users/nimitbhardwaj/Programs/Projects/hermes-web-terminal && uv run pyright
+All checks pass. Now let me update the progress.md:
+[94m[edit][0m
+[94m[read][0m
+[94m[read][0m
+
+<promise>COMPLETE</promise>

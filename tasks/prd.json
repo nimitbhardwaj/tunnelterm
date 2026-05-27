@@ -1,0 +1,249 @@
+{
+  "name": "hermes-web-terminal",
+  "description": "A Python-based web terminal that hosts the hermes CLI tool, providing a browser-based UI with password authentication.",
+  "branchName": "ralph/hermes-web-terminal",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Project Setup and Tooling Configuration",
+      "description": "As a developer, I want to set up the uv project structure under src/hermeswebterminal/ with proper ruff and pyright configuration so that we have a solid foundation for development.",
+      "acceptanceCriteria": [
+        "Project initialized with uv init",
+        "Package structure: src/hermeswebterminal/__init__.py, src/hermeswebterminal/py.typed",
+        "pyproject.toml configured with ruff and pyright as dependencies",
+        "ruff.toml or [tool.ruff] in pyproject.toml with strict settings",
+        "pyrightconfig.json or [tool.pyright] configured",
+        "Entry point defined as console script hermes-web-terminal",
+        "uv run ruff check passes",
+        "uv run ruff format passes",
+        "uv run pyright passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": "",
+      "dependsOn": [],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-002",
+      "title": "PTY Manager Module",
+      "description": "As a developer, I want to implement PTY spawning and I/O bridging to properly run hermes in a pseudo-terminal so that the TUI can receive proper terminal semantics.",
+      "acceptanceCriteria": [
+        "src/hermeswebterminal/pty_manager.py module created",
+        "spawn_hermes() function using pty.fork() to create PTY",
+        "Environment variables set: TERM=xterm-256color, proper TERM_PROGRAM",
+        "Async I/O bridge using asyncio to connect PTY ↔ caller",
+        "read_from_pty() generator yielding output bytes",
+        "write_to_pty() async function for input",
+        "Debug logging at each I/O step (configurable log level)",
+        "Proper PTY cleanup on close",
+        "uv run ruff check passes",
+        "uv run ruff format passes",
+        "uv run pyright passes"
+      ],
+      "priority": 2,
+      "passes": true,
+      "notes": "",
+      "dependsOn": [
+        "US-001"
+      ],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-003",
+      "title": "Authentication Module",
+      "description": "As a developer, I want to implement simple password-based authentication so that only authorized users can access the terminal.",
+      "acceptanceCriteria": [
+        "src/hermeswebterminal/auth.py module created",
+        "Password loaded from HERMES_WEB_TERMINAL_PASSWORD env var",
+        "Authenticator class with verify(password) -> bool method",
+        "Session token generation using secrets.token_urlsafe()",
+        "check_auth(token) -> bool for session validation",
+        "Config file support: ~/.config/hermes-web-terminal/config.toml",
+        "Env vars override config file values",
+        "Graceful error if password not set",
+        "uv run ruff check passes",
+        "uv run ruff format passes",
+        "uv run pyright passes"
+      ],
+      "priority": 2,
+      "passes": true,
+      "notes": "",
+      "dependsOn": [
+        "US-001"
+      ],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-004",
+      "title": "WebSocket Server",
+      "description": "As a developer, I want to implement the WebSocket server to handle browser connections and bridge to PTY so that users can interact with hermes from the browser.",
+      "acceptanceCriteria": [
+        "src/hermeswebterminal/server.py module created",
+        "WebSocket endpoint at /ws using websockets library",
+        "Auth gate: reject connection if not authenticated",
+        "Spawn PTY on authenticated connection",
+        "Bridge: PTY output → WebSocket → client",
+        "Bridge: client input → WebSocket → PTY stdin",
+        "Handle WebSocket disconnects gracefully",
+        "Debug logging for all WebSocket messages (toggleable)",
+        "Run on configurable host/port (default 127.0.0.1:4200)",
+        "uv run ruff check passes",
+        "uv run ruff format passes",
+        "uv run pyright passes"
+      ],
+      "priority": 3,
+      "passes": true,
+      "notes": "",
+      "dependsOn": [
+        "US-001",
+        "US-002",
+        "US-003"
+      ],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-005",
+      "title": "HTTP Server and Static Files",
+      "description": "As a developer, I want to serve the xterm.js frontend via HTTP so that users can access the terminal UI through a web browser.",
+      "acceptanceCriteria": [
+        "HTTP server on same port as WebSocket",
+        "Serve src/hermeswebterminal/static/index.html at /",
+        "Serve static assets if needed",
+        "Index.html includes xterm.js from CDN",
+        "xterm.js terminal connects to /ws on load",
+        "uv run ruff check passes",
+        "uv run ruff format passes",
+        "uv run pyright passes"
+      ],
+      "priority": 2,
+      "passes": true,
+      "notes": "",
+      "dependsOn": [
+        "US-001"
+      ],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-006",
+      "title": "Frontend Implementation",
+      "description": "As a user, I want to see a browser-based terminal UI with password prompt so that I can securely access hermes from any web browser.",
+      "acceptanceCriteria": [
+        "src/hermeswebterminal/static/index.html created",
+        "Password input form displayed before terminal (if not authenticated)",
+        "xterm.js terminal embedded after auth",
+        "Keyboard input sent to WebSocket",
+        "Terminal output rendered from WebSocket messages",
+        "Simple, clean styling",
+        "Connection status indicator",
+        "uv run ruff check passes",
+        "uv run ruff format passes",
+        "uv run pyright passes"
+      ],
+      "priority": 3,
+      "passes": true,
+      "notes": "",
+      "dependsOn": [
+        "US-001",
+        "US-005"
+      ],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-007",
+      "title": "CLI Entrypoint and Configuration",
+      "description": "As an operator, I want to have a CLI entrypoint with argument parsing and config loading so that the server can be easily configured and started.",
+      "acceptanceCriteria": [
+        "src/hermeswebterminal/__main__.py as entry point",
+        "CLI using argparse for argument parsing",
+        "Arguments: --port, --host, --password-env, --config",
+        "Load config from ~/.config/hermes-web-terminal/config.toml",
+        "Env vars override config file",
+        "--help and --version support",
+        "Start both HTTP and WebSocket servers",
+        "uv run ruff check passes",
+        "uv run ruff format passes",
+        "uv run pyright passes"
+      ],
+      "priority": 4,
+      "passes": true,
+      "notes": "",
+      "dependsOn": [
+        "US-001",
+        "US-003",
+        "US-004"
+      ],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-008",
+      "title": "Graceful Shutdown",
+      "description": "As an operator, I want proper signal handling for clean shutdown so that all processes are terminated correctly when the server stops.",
+      "acceptanceCriteria": [
+        "Handle SIGINT (Ctrl+C) gracefully",
+        "Handle SIGTERM gracefully",
+        "Kill spawned PTY processes on shutdown",
+        "Close WebSocket connections cleanly",
+        "Log shutdown sequence",
+        "Exit with code 0 on clean shutdown",
+        "uv run ruff check passes",
+        "uv run ruff format passes",
+        "uv run pyright passes"
+      ],
+      "priority": 4,
+      "passes": true,
+      "notes": "",
+      "dependsOn": [
+        "US-007"
+      ],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-009",
+      "title": "Systemd Service File",
+      "description": "As an operator, I want a systemd service file for auto-start on boot so that hermes-web-terminal runs reliably in production.",
+      "acceptanceCriteria": [
+        "systemd/hermes-web-terminal.service file created",
+        "Correct paths for uvx execution",
+        "Environment file support",
+        "Restart policy configured",
+        "Documentation in README",
+        "uv run ruff check passes",
+        "uv run ruff format passes",
+        "uv run pyright passes"
+      ],
+      "priority": 5,
+      "passes": true,
+      "notes": "",
+      "dependsOn": [
+        "US-007"
+      ],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-010",
+      "title": "README Documentation",
+      "description": "As a developer, I want comprehensive README documentation so that users know how to install and use hermes-web-terminal.",
+      "acceptanceCriteria": [
+        "Installation instructions",
+        "Usage examples: uvx hermes-web-terminal, uv run hermes-web-terminal",
+        "Configuration file example",
+        "Environment variable reference",
+        "Systemd setup instructions",
+        "uv run ruff check passes",
+        "uv run ruff format passes",
+        "uv run pyright passes"
+      ],
+      "priority": 6,
+      "passes": true,
+      "notes": "",
+      "dependsOn": [
+        "US-009"
+      ],
+      "completionNotes": "Completed by agent"
+    }
+  ],
+  "metadata": {
+    "updatedAt": "2026-05-27T20:51:51.057Z"
+  }
+}
