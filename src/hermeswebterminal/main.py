@@ -113,9 +113,14 @@ async def ws_handler(
 
     try:
         await asyncio.gather(pty_to_ws(), ws_to_pty())
+    except asyncio.CancelledError:
+        pass
     finally:
         pty.close()
-        await ws.send_json({"type": "process_exit"})
+        try:
+            await ws.send_json({"type": "process_exit"})
+        except Exception:
+            pass
         logger.info(f"Connection closed for {client_ip}")
 
 

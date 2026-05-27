@@ -92,7 +92,7 @@
                 </div>
                 <div class="setting-row">
                     <label>Size</label>
-                    <input type="range" id="size-slider" min="10" max="24" value="12">
+                    <input type="range" id="size-slider" min="10" max="24" value="14">
                     <span id="size-value">14px</span>
                 </div>
             </div>
@@ -197,7 +197,17 @@
             ws.onclose = () => setStatus('disconnected');
             ws.onerror = () => setStatus('disconnected');
 
-            t.onData(data => ws.readyState === WebSocket.OPEN && ws.send(data));
+            t.onData(data => {
+                if (ws.readyState === WebSocket.OPEN) ws.send(data);
+            });
+
+            t.attachCustomKeyEventHandler(e => {
+                if (e.key === 'Enter' && e.shiftKey) {
+                    ws.readyState === WebSocket.OPEN && ws.send('\n');
+                    return false;
+                }
+                return true;
+            });
             t.onResize(({ cols, rows }) => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify({ type: 'resize', cols, rows })));
         }
 

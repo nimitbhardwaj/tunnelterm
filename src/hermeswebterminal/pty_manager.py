@@ -120,7 +120,7 @@ class PtyManager:
         """Clean up PTY resources and kill the spawned process."""
         if self._pid is not None:
             try:
-                os.kill(self._pid, signal.SIGTERM)
+                os.kill(self._pid, signal.SIGHUP)
             except ProcessLookupError:
                 pass
             self._pid = None
