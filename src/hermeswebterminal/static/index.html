@@ -167,7 +167,7 @@
         function connectTerminal() {
             const terminal = initTerminal();
             setStatus('connecting');
-            ws = new WebSocket('ws://' + window.location.host + '/ws?auth_token=' + encodeURIComponent(authToken));
+            ws = new WebSocket((window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host + '/ws?auth_token=' + encodeURIComponent(authToken));
             ws.onopen = () => {
                 setStatus('connected');
                 setTimeout(() => {
@@ -203,7 +203,7 @@
             loginError.textContent = '';
             try {
                 const token = await new Promise((resolve, reject) => {
-                    const w = new WebSocket('ws://' + window.location.host + '/auth');
+                    const w = new WebSocket((window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host + '/auth');
                     w.onopen = () => w.send(JSON.stringify({ password: passwordInput.value }));
                     w.onmessage = ev => { const d = JSON.parse(ev.data); d.token ? resolve(d.token) : reject(new Error(d.error)); };
                     w.onerror = () => reject(new Error('Connection failed'));
