@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 import logging
 import os
 import signal
@@ -21,117 +20,42 @@ __version__ = "0.1.0"
 
 
 def _load_config(config_path: Path | None = None) -> dict:
-    """Load configuration from TOML file.
-
-    Args:
-        config_path: Optional custom config path. Defaults to standard location.
-
-    Returns:
-        Configuration dictionary.
-
-    """
+    """Load configuration from TOML file."""
     path = config_path or CONFIG_PATH
     if not path.exists():
         return {}
-
     with path.open("rb") as f:
         return tomllib.load(f)
 
 
-def _build_parser() -> argparse.ArgumentParser:
-    """Build the argument parser.
-
-    Returns:
-        Configured ArgumentParser instance.
-
-    """
+def main() -> None:
+    """Run the CLI entry point."""
     parser = argparse.ArgumentParser(
         prog="hermes-web-terminal",
         description="Web-based terminal interface with PTY support.",
     )
-    parser.add_argument(
-        "--version",
-        action="version",
-        version=f"%(prog)s {__version__}",
-    )
-    parser.add_argument(
-        "--host",
-        type=str,
-        default=None,
-        help=f"Host to bind to (default: {DEFAULT_HOST})",
-    )
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=None,
-        help=f"Port to bind to (default: {DEFAULT_PORT})",
-    )
-    parser.add_argument(
-        "--password-env",
-        type=str,
-        default=None,
-        dest="password_env",
-        help=f"Environment variable name containing the password (default: {ENV_PASSWORD_VAR})",
-    )
-    parser.add_argument(
-        "--config",
-        type=Path,
-        default=None,
-        help="Path to config TOML file",
-    )
-    parser.add_argument(
-        "--command",
-        type=str,
-        default=None,
-        help=f"Command to run in the PTY (default: {DEFAULT_COMMAND})",
-    )
-    return parser
-
-
-async def _async_main(
-    host: str,
-    port: int,
-    command: str,
-    password_env: str | None,
-    shutdown_event: asyncio.Event,
-) -> None:
-    """Async main entry point.
-
-    Args:
-        host: Host to bind to.
-        port: Port to bind to.
-        command: Command to run in the PTY.
-        password_env: Name of the environment variable containing the password.
-        shutdown_event: Event to signal shutdown initiation.
-
-    """
-    from hermeswebterminal.server import run_server
-
-    await run_server(host=host, port=port, command=command, shutdown_event=shutdown_event)
-
-
-def main() -> None:
-    """Run the CLI entry point."""
-    parser = _build_parser()
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    parser.add_argument("--host", type=str, default=None, help=f"Host (default: {DEFAULT_HOST})")
+    parser.add_argument("--port", type=int, default=None, help=f"Port (default: {DEFAULT_PORT})")
+    parser.add_argument("--password-env", type=str, default=None, dest="password_env", help="Env var for password")
+    parser.add_argument("--config", type=Path, default=None, help="Config TOML path")
+    parser.add_argument("--command", type=str, default=None, help=f"Command (default: {DEFAULT_COMMAND})")
+    parser.add_argument("--log-level", type=str, default=None, dest="log_level", help="Log level (DEBUG, INFO, WARNING, ERROR)")
     args = parser.parse_args()
 
-    log_level_str = os.environ.get("LOG_LEVEL", "INFO").upper()
+    log_level_str = args.log_level or os.environ.get("LOG_LEVEL", "INFO").upper()
     log_level = getattr(logging, log_level_str, logging.INFO)
-    logging.basicConfig(
-        level=log_level,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
+    logging.basicConfig(level=log_level, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
     logger = logging.getLogger(__name__)
 
     config = _load_config(args.config)
-
     host = args.host or config.get("host", DEFAULT_HOST)
     port = args.port or config.get("port", DEFAULT_PORT)
     command = args.command or config.get("command", DEFAULT_COMMAND)
 
     password_env = args.password_env or ENV_PASSWORD_VAR
     if password_env in os.environ:
-        logger.info(f"Using password from environment variable: {password_env}")
+        logger.info(f"Using password from env var: {password_env}")
     elif config.get("password"):
         logger.info("Using password from config file")
     else:
@@ -140,30 +64,16 @@ def main() -> None:
     password = os.environ.get(password_env) or config.get("password") or ""
     os.environ[ENV_PASSWORD_VAR] = password
 
-    shutdown_event = asyncio.Event()
-
     def handle_signal(sig: int, frame: object) -> None:
-        logger.info(f"Received signal {sig}, initiating graceful shutdown...")
-        logger.info(
-            "Shutdown sequence: closing connections, killing PTY processes, exiting cleanly"
-        )
-        shutdown_event.set()
+        logger.info(f"Received signal {sig}, shutting down...")
+        import sys
+        sys.exit(0)
 
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
 
-    try:
-        asyncio.run(
-            _async_main(
-                host=host,
-                port=port,
-                command=command,
-                password_env=password_env,
-                shutdown_event=shutdown_event,
-            )
-        )
-    except KeyboardInterrupt:
-        pass
+    from hermeswebterminal.main import run
+    run(command=command, host=host, port=port, log_level=args.log_level)
 
 
 if __name__ == "__main__":

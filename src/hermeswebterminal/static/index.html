@@ -10,57 +10,72 @@
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/mshaugh/nerdfont-webfonts@v3.3.0/build/firacode-nerd-font.css">
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        html, body { height: 100vh; overflow: hidden; }
-        body { display: flex; flex-direction: column; background: #1a1a2e; color: #eee; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
-        #login-container { display: flex; align-items: center; justify-content: center; height: 100vh; }
-        #login-form { display: flex; flex-direction: column; gap: 16px; align-items: center; }
-        #login-form h1 { font-size: 24px; font-weight: 400; margin-bottom: 8px; }
-        #login-form p { color: #888; font-size: 14px; }
-        #password-input { padding: 12px 16px; font-size: 16px; border: 1px solid #333; border-radius: 6px; background: #16213e; color: #eee; width: 280px; outline: none; }
-        #password-input:focus { border-color: #4a9eff; }
-        #login-btn { padding: 12px 32px; font-size: 16px; border: none; border-radius: 6px; background: #4a9eff; color: white; cursor: pointer; }
-        #login-btn:hover { background: #3a8eef; }
-        #login-btn:disabled { background: #555; cursor: not-allowed; }
+        html, body { height: 100vh; overflow: hidden; background: #1a1a2e; color: #eee; font-family: sans-serif; }
+        body { display: flex; flex-direction: column; }
+
+        /* Login Screen */
+        #login { display: flex; align-items: center; justify-content: center; height: 100vh; }
+        #login form { display: flex; flex-direction: column; gap: 16px; align-items: center; }
+        #login h1 { font-size: 24px; font-weight: 400; }
+        #login p { color: #888; font-size: 14px; }
+        input { padding: 12px 16px; font-size: 16px; border: 1px solid #333; border-radius: 6px; background: #16213e; color: #eee; width: 280px; }
+        input:focus { border-color: #4a9eff; outline: none; }
+        button { padding: 12px 32px; font-size: 16px; border: none; border-radius: 6px; background: #4a9eff; color: white; cursor: pointer; }
+        button:hover { background: #3a8eef; }
+        button:disabled { background: #555; cursor: not-allowed; }
         #login-error { color: #ff6b6b; font-size: 14px; min-height: 20px; }
-        #terminal-container { display: none; flex-direction: column; height: 100vh; }
+
+        /* Terminal Screen */
+        #terminal { display: none; flex-direction: column; height: 100vh; }
+        #terminal.show { display: flex; }
+
+        /* Status Bar */
         #status-bar { padding: 6px 12px; background: #16213e; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid #333; flex-shrink: 0; position: relative; }
-        #status-indicator { width: 8px; height: 8px; border-radius: 50%; background: #888; }
-        #status-indicator.connected { background: #4ade80; }
-        #status-indicator.disconnected { background: #ff6b6b; }
-        #status-indicator.connecting { background: #fbbf24; }
+        .dot { width: 8px; height: 8px; border-radius: 50%; background: #888; }
+        .dot.connected { background: #4ade80; }
+        .dot.disconnected { background: #ff6b6b; }
+        .dot.connecting { background: #fbbf24; }
         #settings-btn { margin-left: auto; background: none; border: none; color: #888; cursor: pointer; font-size: 20px; padding: 4px 8px; border-radius: 4px; }
         #settings-btn:hover { color: #eee; background: #333; }
+
+        /* Settings Panel */
         #settings-panel { display: none; position: absolute; top: 100%; right: 0; background: #16213e; border: 1px solid #333; border-radius: 8px; padding: 16px; z-index: 100; min-width: 200px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
         #settings-panel.open { display: block; }
         #settings-panel h3 { font-size: 13px; font-weight: 500; margin-bottom: 12px; color: #eee; }
-        .setting-row { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
-        .setting-row label { font-size: 11px; color: #888; }
-        .setting-row select, .setting-row input[type="range"] { width: 100%; }
-        .setting-row select { padding: 6px 8px; background: #1a1a2e; border: 1px solid #333; border-radius: 4px; color: #eee; font-size: 12px; }
-        .setting-row input[type="range"] { cursor: pointer; accent-color: #4a9eff; }
+        .setting-row { margin-bottom: 12px; }
+        .setting-row label { display: block; font-size: 11px; color: #888; margin-bottom: 4px; }
+        select, input[type="range"] { width: 100%; }
+        select { padding: 6px 8px; background: #1a1a2e; border: 1px solid #333; border-radius: 4px; color: #eee; font-size: 12px; }
+        input[type="range"] { cursor: pointer; accent-color: #4a9eff; }
         .theme-list { display: flex; flex-direction: column; gap: 4px; }
         .theme-item { padding: 6px 8px; border-radius: 4px; cursor: pointer; font-size: 12px; border: 1px solid transparent; }
         .theme-item:hover { background: #333; }
         .theme-item.selected { border-color: #4a9eff; }
-        #font-size-value { font-size: 11px; color: #888; text-align: right; }
-        #terminal { flex: 1; overflow: hidden; }
-        #terminal .xterm { height: 100%; padding: 8px; }
+        #size-value { font-size: 11px; color: #888; text-align: right; }
+
+        /* Terminal */
+        #term { flex: 1; overflow: hidden; }
+        #term .xterm { height: 100%; padding: 8px; }
+        #term .xterm-viewport { overflow-y: auto; }
     </style>
 </head>
 <body>
-    <div id="login-container">
+    <!-- Login Screen -->
+    <div id="login">
         <form id="login-form">
             <h1>Hermes Web Terminal</h1>
             <p>Enter your password to access the terminal</p>
-            <input type="password" id="password-input" placeholder="Password" autocomplete="off">
-            <button type="submit" id="login-btn">Connect</button>
+            <input type="password" id="password" placeholder="Password" autocomplete="off">
+            <button type="submit">Connect</button>
             <div id="login-error"></div>
         </form>
     </div>
-    <div id="terminal-container">
+
+    <!-- Terminal Screen -->
+    <div id="terminal">
         <div id="status-bar">
-            <span id="status-indicator"></span>
-            <span id="status-text">Connecting...</span>
+            <span class="dot" id="dot"></span>
+            <span id="status">Connecting...</span>
             <button id="settings-btn" title="Settings">&#9881;</button>
             <div id="settings-panel">
                 <h3>Settings</h3>
@@ -73,162 +88,160 @@
                     <select id="font-select">
                         <option value="FiraCode Nerd Font">FiraCode Nerd Font</option>
                         <option value="Hack Nerd Font">Hack Nerd Font</option>
-                        <option value="JetBrainsMono Nerd Font Mono">JetBrainsMono Nerd Font</option>
                     </select>
                 </div>
                 <div class="setting-row">
                     <label>Size</label>
-                    <input type="range" id="font-size-slider" min="10" max="24" value="14">
-                    <span id="font-size-value">14px</span>
+                    <input type="range" id="size-slider" min="10" max="24" value="12">
+                    <span id="size-value">14px</span>
                 </div>
             </div>
         </div>
-        <div id="terminal"></div>
+        <div id="term"></div>
     </div>
+
     <script>
-        const loginContainer = document.getElementById('login-container');
-        const loginForm = document.getElementById('login-form');
-        const passwordInput = document.getElementById('password-input');
-        const loginBtn = document.getElementById('login-btn');
-        const loginError = document.getElementById('login-error');
-        const terminalContainer = document.getElementById('terminal-container');
-        const statusIndicator = document.getElementById('status-indicator');
-        const statusText = document.getElementById('status-text');
-        const themeList = document.getElementById('theme-list');
-        const fontSelect = document.getElementById('font-select');
-        const fontSizeSlider = document.getElementById('font-size-slider');
+        // --- State ---
+        let term, fitAddon, ws, themes = [];
+        const el = id => document.getElementById(id);
 
-        let term = null;
-        let fitAddon = null;
-        let ws = null;
-        let authToken = null;
-        let themes = [];
+        // --- Utils ---
+        const wsUrl = (window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host;
 
-        async function loadThemes() {
-            try {
-                const res = await fetch('/static/themes.json');
-                themes = await res.json();
-                renderThemes();
-            } catch (e) { console.error('Failed to load themes:', e); }
+        // --- Status ---
+        function setStatus(s) {
+            el('dot').className = 'dot ' + s;
+            el('status').textContent = s === 'connected' ? 'Connected' : s === 'disconnected' ? 'Disconnected' : 'Connecting...';
+        }
+
+        // --- Themes ---
+        function loadThemes() {
+            fetch('/static/themes.json')
+                .then(r => r.json())
+                .then(data => { themes = data.themes; renderThemes(); })
+                .catch(console.error);
         }
 
         function renderThemes() {
-            themeList.innerHTML = '';
-            themes.themes.forEach(t => {
+            el('theme-list').innerHTML = '';
+            themes.forEach(t => {
                 const div = document.createElement('div');
                 div.className = 'theme-item' + (t.name === 'tokyo-night' ? ' selected' : '');
                 div.textContent = t.label;
                 div.dataset.theme = t.name;
                 div.style.background = t.colors.background;
                 div.style.color = t.colors.foreground;
-                div.addEventListener('click', () => applyTheme(t.name));
-                themeList.appendChild(div);
+                div.onclick = () => applyTheme(t.name);
+                el('theme-list').appendChild(div);
             });
         }
 
-        function setStatus(status) {
-            statusIndicator.className = status;
-            statusText.textContent = status === 'connected' ? 'Connected' : status === 'disconnected' ? 'Disconnected' : 'Connecting...';
-        }
-
-        function applyTheme(themeName) {
+        function applyTheme(name) {
             if (!term) return;
-            const theme = themes.themes.find(t => t.name === themeName);
-            if (!theme) return;
-            term.options.theme = theme.colors;
-            document.querySelectorAll('.theme-item').forEach(el => el.classList.toggle('selected', el.dataset.theme === themeName));
+            const t = themes.find(x => x.name === name);
+            if (!t) return;
+            term.options.theme = t.colors;
+            document.querySelectorAll('.theme-item').forEach(el => el.classList.toggle('selected', el.dataset.theme === name));
         }
 
-        function applyFontSize(size) {
-            if (!term) return;
-            term.options.fontSize = size;
-            document.getElementById('font-size-value').textContent = size + 'px';
-            setTimeout(() => fitAddon.fit(), 10);
-        }
-
+        // --- Font Settings ---
         function applyFont(fontFamily) {
             if (!term) return;
             term.options.fontFamily = fontFamily + ', monospace';
-            setTimeout(() => fitAddon.fit(), 10);
+            fitAddon.fit();
         }
 
+        function applySize(size) {
+            if (!term) return;
+            term.options.fontSize = size;
+            el('size-value').textContent = size + 'px';
+            fitAddon.fit();
+        }
+
+        // --- Terminal ---
         function initTerminal() {
-            if (!term) {
-                term = new Terminal({ cursorBlink: true, fontSize: 14, fontFamily: 'FiraCode Nerd Font, monospace' });
-                fitAddon = new FitAddon.FitAddon();
-                term.loadAddon(fitAddon);
-                term.open(document.getElementById('terminal'));
-                fitAddon.fit();
-                applyTheme('tokyo-night');
-            }
+            if (term) return term;
+            term = new Terminal({ cursorBlink: true, fontSize: 14, fontFamily: 'FiraCode Nerd Font, monospace' });
+            fitAddon = new FitAddon.FitAddon();
+            term.loadAddon(fitAddon);
+            term.open(el('term'));
+            applyTheme('tokyo-night');
+            fitAddon.fit();
             return term;
         }
 
-        function connectTerminal() {
-            const terminal = initTerminal();
+        // --- WebSocket ---
+        function connect() {
+            const t = initTerminal();
             setStatus('connecting');
-            ws = new WebSocket((window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host + '/ws?auth_token=' + encodeURIComponent(authToken));
+            ws = new WebSocket(wsUrl + '/ws?auth_token=' + encodeURIComponent(authToken));
+
             ws.onopen = () => {
                 setStatus('connected');
                 setTimeout(() => {
                     fitAddon.fit();
-                    ws.send(JSON.stringify({ type: 'resize', cols: terminal.cols, rows: terminal.rows }));
+                    ws.send(JSON.stringify({ type: 'resize', cols: t.cols, rows: t.rows }));
                 }, 50);
             };
-            ws.onmessage = event => {
-                if (typeof event.data === 'string') {
-                    try {
-                        const data = JSON.parse(event.data);
-                        if (data.type === 'process_exit') {
-                            document.getElementById('terminal').innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:16px;color:#888;"><p>Process closed.</p><button onclick="location.reload()" style="padding:8px 24px;background:#4a9eff;color:white;border:none;border-radius:4px;cursor:pointer;">Reconnect</button></div>';
-                            return;
-                        }
-                    } catch (_) {}
-                    terminal.write(event.data);
-                } else {
-                    event.data.text().then(text => terminal.write(text));
-                }
+
+            ws.onmessage = e => {
+                if (typeof e.data !== 'string') { e.data.text().then(text => t.write(text)); return; }
+                try {
+                    const d = JSON.parse(e.data);
+                    if (d.type === 'process_exit') {
+                        el('term').innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:16px;color:#888;"><p>Process closed.</p><button onclick="location.reload()" style="padding:8px 24px;background:#4a9eff;color:white;border:none;border-radius:4px;cursor:pointer;">Reconnect</button></div>';
+                    }
+                } catch (_) { t.write(e.data); }
             };
+
             ws.onclose = () => setStatus('disconnected');
             ws.onerror = () => setStatus('disconnected');
-            terminal.onData(data => ws.readyState === WebSocket.OPEN && ws.send(data));
-            terminal.onResize(({ cols, rows }) => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify({ type: 'resize', cols, rows })));
+
+            t.onData(data => ws.readyState === WebSocket.OPEN && ws.send(data));
+            t.onResize(({ cols, rows }) => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify({ type: 'resize', cols, rows })));
         }
 
-        window.addEventListener('resize', () => fitAddon && fitAddon.fit());
-
-        loginForm.addEventListener('submit', async e => {
+        // --- Auth ---
+        let authToken;
+        el('login-form').onsubmit = async e => {
             e.preventDefault();
-            loginBtn.disabled = true;
-            loginError.textContent = '';
+            const btn = e.target.querySelector('button');
+            btn.disabled = true;
+            el('login-error').textContent = '';
             try {
-                const token = await new Promise((resolve, reject) => {
-                    const w = new WebSocket((window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host + '/auth');
-                    w.onopen = () => w.send(JSON.stringify({ password: passwordInput.value }));
-                    w.onmessage = ev => { const d = JSON.parse(ev.data); d.token ? resolve(d.token) : reject(new Error(d.error)); };
-                    w.onerror = () => reject(new Error('Connection failed'));
+                authToken = await new Promise((res, rej) => {
+                    const w = new WebSocket(wsUrl + '/auth');
+                    w.onopen = () => w.send(JSON.stringify({ password: el('password').value }));
+                    w.onmessage = e => { const d = JSON.parse(e.data); d.token ? res(d.token) : rej(new Error(d.error)); };
+                    w.onerror = () => rej(new Error('Connection failed'));
                 });
-                authToken = token;
-                loginContainer.style.display = 'none';
-                terminalContainer.style.display = 'flex';
-                connectTerminal();
+                el('login').style.display = 'none';
+                el('terminal').classList.add('show');
+                connect();
             } catch (err) {
-                loginError.textContent = err.message;
-                loginBtn.disabled = false;
+                el('login-error').textContent = err.message;
+                btn.disabled = false;
             }
-        });
+        };
 
-        passwordInput.focus();
+        // --- Settings Toggle ---
+        el('settings-btn').onclick = () => el('settings-panel').classList.toggle('open');
+        document.onclick = e => {
+            if (!el('settings-panel').contains(e.target) && e.target !== el('settings-btn')) {
+                el('settings-panel').classList.remove('open');
+            }
+        };
+
+        // --- Settings Events ---
+        el('font-select').onchange = e => applyFont(e.target.value);
+        el('size-slider').oninput = e => applySize(parseInt(e.target.value));
+
+        // --- Resize ---
+        window.onresize = () => fitAddon && fitAddon.fit();
+
+        // --- Init ---
+        el('password').focus();
         loadThemes();
-
-        document.getElementById('settings-btn').addEventListener('click', () => document.getElementById('settings-panel').classList.toggle('open'));
-        document.addEventListener('click', e => {
-            const panel = document.getElementById('settings-panel');
-            const btn = document.getElementById('settings-btn');
-            if (panel.classList.contains('open') && !panel.contains(e.target) && e.target !== btn) panel.classList.remove('open');
-        });
-        fontSizeSlider.addEventListener('input', e => applyFontSize(parseInt(e.target.value)));
-        fontSelect.addEventListener('change', e => applyFont(e.target.value));
     </script>
 </body>
 </html>
