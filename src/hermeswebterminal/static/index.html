@@ -5,124 +5,46 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Hermes Web Terminal</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css">
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/mshaugh/nerdfont-webfonts@v3.3.0/build/firacode-nerd-font.css">
     <style>
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-        }
-        html, body {
-            background: #1a1a2e;
-            color: #eee;
-            font-family: 'Hack Nerd Font', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, Monaco, monospace;
-            height: 100vh;
-            overflow: hidden;
-        }
-        body {
-            display: flex;
-            flex-direction: column;
-        }
-        #login-container {
-            text-align: center;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            height: 100vh;
-        }
-        #login-form {
-            display: flex;
-            flex-direction: column;
-            gap: 16px;
-            align-items: center;
-        }
-        #login-form h1 {
-            font-size: 24px;
-            font-weight: 400;
-            margin-bottom: 8px;
-        }
-        #login-form p {
-            color: #888;
-            font-size: 14px;
-            margin-bottom: 16px;
-        }
-        #password-input {
-            padding: 12px 16px;
-            font-size: 16px;
-            border: 1px solid #333;
-            border-radius: 6px;
-            background: #16213e;
-            color: #eee;
-            width: 280px;
-            outline: none;
-            transition: border-color 0.2s;
-        }
-        #password-input:focus {
-            border-color: #4a9eff;
-        }
-        #login-btn {
-            padding: 12px 32px;
-            font-size: 16px;
-            border: none;
-            border-radius: 6px;
-            background: #4a9eff;
-            color: white;
-            cursor: pointer;
-            transition: background 0.2s;
-        }
-        #login-btn:hover {
-            background: #3a8eef;
-        }
-        #login-btn:disabled {
-            background: #555;
-            cursor: not-allowed;
-        }
-        #login-error {
-            color: #ff6b6b;
-            font-size: 14px;
-            min-height: 20px;
-        }
-        #terminal-container {
-            display: none;
-            flex-direction: column;
-            height: 100vh;
-            width: 100vw;
-        }
-        #status-bar {
-            padding: 6px 12px;
-            background: #16213e;
-            font-size: 12px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            border-bottom: 1px solid #333;
-            flex-shrink: 0;
-        }
-        #status-indicator {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background: #888;
-        }
-        #status-indicator.connected {
-            background: #4ade80;
-        }
-        #status-indicator.disconnected {
-            background: #ff6b6b;
-        }
-        #status-indicator.connecting {
-            background: #fbbf24;
-        }
-        #terminal {
-            flex: 1;
-            padding: 8px;
-            overflow: hidden;
-        }
-        #terminal .xterm {
-            height: 100%;
-        }
-        #terminal .xterm-viewport {
-            overflow-y: auto;
-        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body { height: 100vh; overflow: hidden; }
+        body { display: flex; flex-direction: column; background: #1a1a2e; color: #eee; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
+        #login-container { display: flex; align-items: center; justify-content: center; height: 100vh; }
+        #login-form { display: flex; flex-direction: column; gap: 16px; align-items: center; }
+        #login-form h1 { font-size: 24px; font-weight: 400; margin-bottom: 8px; }
+        #login-form p { color: #888; font-size: 14px; }
+        #password-input { padding: 12px 16px; font-size: 16px; border: 1px solid #333; border-radius: 6px; background: #16213e; color: #eee; width: 280px; outline: none; }
+        #password-input:focus { border-color: #4a9eff; }
+        #login-btn { padding: 12px 32px; font-size: 16px; border: none; border-radius: 6px; background: #4a9eff; color: white; cursor: pointer; }
+        #login-btn:hover { background: #3a8eef; }
+        #login-btn:disabled { background: #555; cursor: not-allowed; }
+        #login-error { color: #ff6b6b; font-size: 14px; min-height: 20px; }
+        #terminal-container { display: none; flex-direction: column; height: 100vh; }
+        #status-bar { padding: 6px 12px; background: #16213e; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid #333; flex-shrink: 0; position: relative; }
+        #status-indicator { width: 8px; height: 8px; border-radius: 50%; background: #888; }
+        #status-indicator.connected { background: #4ade80; }
+        #status-indicator.disconnected { background: #ff6b6b; }
+        #status-indicator.connecting { background: #fbbf24; }
+        #settings-btn { margin-left: auto; background: none; border: none; color: #888; cursor: pointer; font-size: 20px; padding: 4px 8px; border-radius: 4px; }
+        #settings-btn:hover { color: #eee; background: #333; }
+        #settings-panel { display: none; position: absolute; top: 100%; right: 0; background: #16213e; border: 1px solid #333; border-radius: 8px; padding: 16px; z-index: 100; min-width: 200px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+        #settings-panel.open { display: block; }
+        #settings-panel h3 { font-size: 13px; font-weight: 500; margin-bottom: 12px; color: #eee; }
+        .setting-row { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+        .setting-row label { font-size: 11px; color: #888; }
+        .setting-row select, .setting-row input[type="range"] { width: 100%; }
+        .setting-row select { padding: 6px 8px; background: #1a1a2e; border: 1px solid #333; border-radius: 4px; color: #eee; font-size: 12px; }
+        .setting-row input[type="range"] { cursor: pointer; accent-color: #4a9eff; }
+        .theme-list { display: flex; flex-direction: column; gap: 4px; }
+        .theme-item { padding: 6px 8px; border-radius: 4px; cursor: pointer; font-size: 12px; border: 1px solid transparent; }
+        .theme-item:hover { background: #333; }
+        .theme-item.selected { border-color: #4a9eff; }
+        #font-size-value { font-size: 11px; color: #888; text-align: right; }
+        #terminal { flex: 1; overflow: hidden; }
+        #terminal .xterm { height: 100%; padding: 8px; }
     </style>
 </head>
 <body>
@@ -139,11 +61,30 @@
         <div id="status-bar">
             <span id="status-indicator"></span>
             <span id="status-text">Connecting...</span>
+            <button id="settings-btn" title="Settings">&#9881;</button>
+            <div id="settings-panel">
+                <h3>Settings</h3>
+                <div class="setting-row">
+                    <label>Theme</label>
+                    <div class="theme-list" id="theme-list"></div>
+                </div>
+                <div class="setting-row">
+                    <label>Font</label>
+                    <select id="font-select">
+                        <option value="FiraCode Nerd Font">FiraCode Nerd Font</option>
+                        <option value="Hack Nerd Font">Hack Nerd Font</option>
+                        <option value="JetBrainsMono Nerd Font Mono">JetBrainsMono Nerd Font</option>
+                    </select>
+                </div>
+                <div class="setting-row">
+                    <label>Size</label>
+                    <input type="range" id="font-size-slider" min="10" max="24" value="14">
+                    <span id="font-size-value">14px</span>
+                </div>
+            </div>
         </div>
         <div id="terminal"></div>
     </div>
-    <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
     <script>
         const loginContainer = document.getElementById('login-container');
         const loginForm = document.getElementById('login-form');
@@ -153,36 +94,72 @@
         const terminalContainer = document.getElementById('terminal-container');
         const statusIndicator = document.getElementById('status-indicator');
         const statusText = document.getElementById('status-text');
+        const themeList = document.getElementById('theme-list');
+        const fontSelect = document.getElementById('font-select');
+        const fontSizeSlider = document.getElementById('font-size-slider');
 
         let term = null;
         let fitAddon = null;
         let ws = null;
         let authToken = null;
+        let themes = [];
+
+        async function loadThemes() {
+            try {
+                const res = await fetch('/static/themes.json');
+                themes = await res.json();
+                renderThemes();
+            } catch (e) { console.error('Failed to load themes:', e); }
+        }
+
+        function renderThemes() {
+            themeList.innerHTML = '';
+            themes.themes.forEach(t => {
+                const div = document.createElement('div');
+                div.className = 'theme-item' + (t.name === 'tokyo-night' ? ' selected' : '');
+                div.textContent = t.label;
+                div.dataset.theme = t.name;
+                div.style.background = t.colors.background;
+                div.style.color = t.colors.foreground;
+                div.addEventListener('click', () => applyTheme(t.name));
+                themeList.appendChild(div);
+            });
+        }
 
         function setStatus(status) {
             statusIndicator.className = status;
-            if (status === 'connected') {
-                statusText.textContent = 'Connected';
-            } else if (status === 'disconnected') {
-                statusText.textContent = 'Disconnected';
-            } else if (status === 'connecting') {
-                statusText.textContent = 'Connecting...';
-            }
+            statusText.textContent = status === 'connected' ? 'Connected' : status === 'disconnected' ? 'Disconnected' : 'Connecting...';
+        }
+
+        function applyTheme(themeName) {
+            if (!term) return;
+            const theme = themes.themes.find(t => t.name === themeName);
+            if (!theme) return;
+            term.options.theme = theme.colors;
+            document.querySelectorAll('.theme-item').forEach(el => el.classList.toggle('selected', el.dataset.theme === themeName));
+        }
+
+        function applyFontSize(size) {
+            if (!term) return;
+            term.options.fontSize = size;
+            document.getElementById('font-size-value').textContent = size + 'px';
+            setTimeout(() => fitAddon.fit(), 10);
+        }
+
+        function applyFont(fontFamily) {
+            if (!term) return;
+            term.options.fontFamily = fontFamily + ', monospace';
+            setTimeout(() => fitAddon.fit(), 10);
         }
 
         function initTerminal() {
             if (!term) {
-                term = new Terminal({
-                    cursorBlink: true,
-                    fontSize: 14,
-                    fontFamily: '"Hack Nerd Font", "Jetbrains Mono", "Fira Code", "Cascadia Code", Menlo, Monaco, monospace',
-                    fontWeight: 'normal',
-                    fontWeightBold: 'bold',
-                });
+                term = new Terminal({ cursorBlink: true, fontSize: 14, fontFamily: 'FiraCode Nerd Font, monospace' });
                 fitAddon = new FitAddon.FitAddon();
                 term.loadAddon(fitAddon);
                 term.open(document.getElementById('terminal'));
                 fitAddon.fit();
+                applyTheme('tokyo-night');
             }
             return term;
         }
@@ -190,33 +167,20 @@
         function connectTerminal() {
             const terminal = initTerminal();
             setStatus('connecting');
-            const wsUrl = 'ws://' + window.location.host + '/ws?auth_token=' + encodeURIComponent(authToken);
-            ws = new WebSocket(wsUrl);
-
+            ws = new WebSocket('ws://' + window.location.host + '/ws?auth_token=' + encodeURIComponent(authToken));
             ws.onopen = () => {
                 setStatus('connected');
                 setTimeout(() => {
-                    if (fitAddon) {
-                        fitAddon.fit();
-                        const dims = { cols: terminal.cols, rows: terminal.rows };
-                        ws.send(JSON.stringify({ type: 'resize', ...dims }));
-                    }
-                    terminal.write('\r\n\x1b[32mConnected to Hermes Web Terminal\x1b[0m\r\n\r\n');
-                }, 100);
+                    fitAddon.fit();
+                    ws.send(JSON.stringify({ type: 'resize', cols: terminal.cols, rows: terminal.rows }));
+                }, 50);
             };
-
             ws.onmessage = event => {
                 if (typeof event.data === 'string') {
                     try {
                         const data = JSON.parse(event.data);
                         if (data.type === 'process_exit') {
-                            terminal.write('\r\n\x1b[33mProcess exited. Thanks for using Hermes Web Terminal!\x1b[0m\r\n');
-                            document.getElementById('terminal').innerHTML = `
-                                <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:16px;">
-                                    <p style="color:#888;">Process has been closed.</p>
-                                    <button id="reconnect-btn" style="padding:8px 24px;background:#4a9eff;color:white;border:none;border-radius:4px;cursor:pointer;">Reconnect</button>
-                                </div>
-                            `;
+                            document.getElementById('terminal').innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:16px;color:#888;"><p>Process closed.</p><button onclick="location.reload()" style="padding:8px 24px;background:#4a9eff;color:white;border:none;border-radius:4px;cursor:pointer;">Reconnect</button></div>';
                             return;
                         }
                     } catch (_) {}
@@ -225,86 +189,46 @@
                     event.data.text().then(text => terminal.write(text));
                 }
             };
-
-            ws.onclose = () => {
-                setStatus('disconnected');
-                terminal.write('\r\n\x1b[33mProcess exited. Thanks for using Hermes Web Terminal!\x1b[0m\r\n');
-                document.getElementById('terminal').innerHTML = `
-                    <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:16px;">
-                        <p style="color:#888;">Process has been closed.</p>
-                        <button id="reconnect-btn" style="padding:8px 24px;background:#4a9eff;color:white;border:none;border-radius:4px;cursor:pointer;">Reconnect</button>
-                    </div>
-                `;
-                document.getElementById('reconnect-btn').addEventListener('click', () => location.reload());
-            };
-
-            ws.onerror = () => {
-                setStatus('disconnected');
-                terminal.write('\r\n\x1b[31mConnection error\x1b[0m\r\n');
-            };
-
-            terminal.onData(data => {
-                if (ws && ws.readyState === WebSocket.OPEN) {
-                    ws.send(data);
-                }
-            });
-
-            terminal.onResize(({ cols, rows }) => {
-                if (ws && ws.readyState === WebSocket.OPEN) {
-                    ws.send(JSON.stringify({ type: 'resize', cols, rows }));
-                }
-            });
+            ws.onclose = () => setStatus('disconnected');
+            ws.onerror = () => setStatus('disconnected');
+            terminal.onData(data => ws.readyState === WebSocket.OPEN && ws.send(data));
+            terminal.onResize(({ cols, rows }) => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify({ type: 'resize', cols, rows })));
         }
 
-        window.addEventListener('resize', () => {
-            if (fitAddon) {
-                fitAddon.fit();
-            }
-        });
+        window.addEventListener('resize', () => fitAddon && fitAddon.fit());
 
         loginForm.addEventListener('submit', async e => {
             e.preventDefault();
-            const password = passwordInput.value;
             loginBtn.disabled = true;
             loginError.textContent = '';
-
             try {
-                const wsUrl = 'ws://' + window.location.host + '/auth';
-
-                await new Promise((resolve, reject) => {
-                    const authWs = new WebSocket(wsUrl);
-                    authWs.onopen = async () => {
-                        authWs.send(JSON.stringify({ password }));
-                    };
-                    authWs.onmessage = (event) => {
-                        const data = JSON.parse(event.data);
-                        if (data.token) {
-                            authToken = data.token;
-                            loginContainer.style.display = 'none';
-                            terminalContainer.style.display = 'flex';
-                            authWs.close();
-                            resolve();
-                        } else {
-                            loginError.textContent = data.error || 'Authentication failed';
-                            loginBtn.disabled = false;
-                            authWs.close();
-                            reject(new Error(data.error));
-                        }
-                    };
-                    authWs.onerror = () => {
-                        loginError.textContent = 'Connection failed';
-                        loginBtn.disabled = false;
-                        reject(new Error('Connection failed'));
-                    };
+                const token = await new Promise((resolve, reject) => {
+                    const w = new WebSocket('ws://' + window.location.host + '/auth');
+                    w.onopen = () => w.send(JSON.stringify({ password: passwordInput.value }));
+                    w.onmessage = ev => { const d = JSON.parse(ev.data); d.token ? resolve(d.token) : reject(new Error(d.error)); };
+                    w.onerror = () => reject(new Error('Connection failed'));
                 });
-
+                authToken = token;
+                loginContainer.style.display = 'none';
+                terminalContainer.style.display = 'flex';
                 connectTerminal();
             } catch (err) {
-                // Error already handled in onmessage/onerror
+                loginError.textContent = err.message;
+                loginBtn.disabled = false;
             }
         });
 
         passwordInput.focus();
+        loadThemes();
+
+        document.getElementById('settings-btn').addEventListener('click', () => document.getElementById('settings-panel').classList.toggle('open'));
+        document.addEventListener('click', e => {
+            const panel = document.getElementById('settings-panel');
+            const btn = document.getElementById('settings-btn');
+            if (panel.classList.contains('open') && !panel.contains(e.target) && e.target !== btn) panel.classList.remove('open');
+        });
+        fontSizeSlider.addEventListener('input', e => applyFontSize(parseInt(e.target.value)));
+        fontSelect.addEventListener('change', e => applyFont(e.target.value));
     </script>
 </body>
 </html>

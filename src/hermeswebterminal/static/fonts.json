@@ -1,0 +1,20 @@
+{
+  "fonts": [
+    {
+      "family": "FiraCode Nerd Font",
+      "displayName": "FiraCode Nerd Font"
+    },
+    {
+      "family": "Hack Nerd Font",
+      "displayName": "Hack Nerd Font"
+    },
+    {
+      "family": "JetBrainsMono Nerd Font Mono",
+      "displayName": "JetBrainsMono Nerd Font"
+    },
+    {
+      "family": "monospace",
+      "displayName": "System Mono"
+    }
+  ]
+}

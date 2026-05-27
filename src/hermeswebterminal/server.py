@@ -158,6 +158,7 @@ def create_app(command: str = DEFAULT_COMMAND) -> aiohttp.web.Application:
     app.router.add_get("/", index_handler)
     app.router.add_get("/ws", ws_handler)
     app.router.add_get("/auth", auth_handler)
+    app.router.add_static("/static", STATIC_DIR)
     return app
 
 
