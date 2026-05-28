@@ -63,6 +63,7 @@ ignore = [
     "D203",  # one-blank-line-before-class (conflicts with D211)
     "D213",  # multi-line-summary-second-line (conflicts with D212)
 ]
+exclude = ["tests/**"]
 
 
 [tool.ruff.lint.isort]
