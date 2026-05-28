@@ -24,7 +24,7 @@ package-data = { tunnelterm = ["static/**/*"] }
 [tool.setuptools.dynamic]
 version = { attr = "tunnelterm.__init__.__version__" }
 
-[tool.setuptools-scm]
+[tool.setuptools_scm]
 fallback_version = "0.1.0"
 version_scheme = "post-release"
 local_scheme = "no-local-version"
