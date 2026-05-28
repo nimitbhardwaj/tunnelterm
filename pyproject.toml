@@ -1,26 +1,37 @@
 [project]
 name = "tunnelterm"
-version = "0.1.0"
 description = "Web-based terminal: run any shell command in a PTY, accessed through the browser over WebSocket."
 readme = "README.md"
 requires-python = ">=3.12"
-license = { text = "MIT" }
+license = "MIT"
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.34.0",
 ]
+dynamic = ["version"]
 
 [project.scripts]
 tunnelterm = "tunnelterm.__main__:main"
 
+[build-system]
+requires = ["setuptools>=61.0", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = { find = { where = ["src"] } }
+package-data = { tunnelterm = ["static/**/*"] }
+
+[tool.setuptools.dynamic]
+version = { attr = "tunnelterm.__init__.__version__" }
+
+[tool.setuptools-scm]
+fallback_version = "0.1.0"
+version_scheme = "post-release"
+local_scheme = "no-local-version"
+
 [tool.uv]
 package = true
 
-[tool.setuptools.packages.find]
-where = ["src"]
-
-[tool.setuptools.package-data]
-tunnelterm = ["static/**/*"]
 
 [tool.pyright]
 pythonVersion = "3.12"

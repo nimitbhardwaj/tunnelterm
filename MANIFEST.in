@@ -1,1 +1,10 @@
 recursive-include src/tunnelterm/static *
+exclude .git*
+exclude .ralph-tui
+exclude .python-version
+exclude pyrightconfig.json
+exclude uv.lock
+exclude *.pyc
+exclude __pycache__
+prune .git
+prune .ralph-tui
