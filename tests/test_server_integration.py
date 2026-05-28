@@ -166,6 +166,74 @@ async def test_rate_limit_after_many_failures() -> None:
         proc.wait(timeout=3)
 
 
+async def test_ctrl_d_closes_session_cleanly() -> None:
+    """Regression: when the shell exits (Ctrl+D), the server must send a
+    {__tt: process_exit} frame AND close the WebSocket with a clean 1000 code,
+    AND the child process must be reaped (no zombie)."""
+    import os as _os
+
+    from websockets.legacy.client import connect
+
+    port = _free_port()
+    proc = _start_server(port, command="bash --norc --noprofile")
+    try:
+        token = (await _do_auth(port, "testpass"))["token"]
+        async with connect(
+            f"ws://127.0.0.1:{port}/ws",
+            subprotocols=["tunnelterm.v1.token", token],  # type: ignore[arg-type]
+        ) as ws:
+            await asyncio.sleep(0.4)  # let bash print its prompt
+            await ws.send("\x04")  # Ctrl+D (EOT)
+
+            # Drain frames; expect process_exit and then a clean close.
+            saw_exit = False
+            close_code = None
+            deadline = asyncio.get_event_loop().time() + 5.0
+            while asyncio.get_event_loop().time() < deadline:
+                try:
+                    msg = await asyncio.wait_for(ws.recv(), timeout=0.5)
+                except asyncio.TimeoutError:
+                    continue
+                except Exception:
+                    # Connection closed; capture close code.
+                    close_code = ws.close_code
+                    break
+                if isinstance(msg, str) and '"__tt":"process_exit"' in msg:
+                    saw_exit = True
+
+            # If the loop exited without an exception we may still need to
+            # close the context manager; once closed, close_code is set.
+            if close_code is None:
+                close_code = ws.close_code
+
+        assert saw_exit, "did not receive process_exit control frame"
+        assert close_code == 1000, f"expected clean close 1000, got {close_code}"
+
+        # Server process must still be alive (only the PTY child should exit).
+        assert proc.poll() is None, "server died after Ctrl+D"
+
+        # No bash --norc --noprofile zombies should remain under our server.
+        # macOS `ps -o stat=` returns 'Z' for zombies.
+        import subprocess as _sp
+
+        result = _sp.run(  # noqa: S603
+            ["ps", "-A", "-o", "ppid=,stat=,command="],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        zombies = [
+            line for line in result.stdout.splitlines()
+            if line.strip().startswith(str(proc.pid))
+            and "Z" in line.split(None, 2)[1]
+        ]
+        assert not zombies, f"zombie children remain: {zombies}"
+        _ = _os  # silence unused-import
+    finally:
+        proc.terminate()
+        proc.wait(timeout=3)
+
+
 async def test_shutdown_under_idle_connection_is_fast() -> None:
     """The original Ctrl+C regression: SIGINT with an active client must
     complete shutdown within 3s, not hang for 10+s."""

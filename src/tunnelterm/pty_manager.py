@@ -177,15 +177,18 @@ class PtyManager:
     # ---------- shutdown ----------
 
     def close(self) -> None:
-        """Kill the child and close the master fd. Idempotent."""
+        """Kill the child and close the master fd. Idempotent.
+
+        Reaps the child synchronously so we don't leave zombies behind even
+        when the shell exits on its own (e.g. user pressed Ctrl+D). The reap
+        loop retries briefly because the kernel may not have updated the
+        process table by the time SIGKILL returns.
+        """
         pid = self._pid
         self._pid = None
         if pid is not None:
             self._kill_process(pid)
-            try:
-                os.waitpid(pid, os.WNOHANG)
-            except (ChildProcessError, OSError):
-                pass
+            self._reap(pid)
 
         master_copy = self._master_fd
         self._master_fd = None
@@ -194,6 +197,33 @@ class PtyManager:
                 os.close(master_copy)
             except OSError:
                 pass
+
+    @staticmethod
+    def _reap(pid: int, timeout: float = 1.0) -> None:
+        """Wait for ``pid`` to be reaped, retrying briefly on WNOHANG=0.
+
+        Returns silently in all cases (process gone, already reaped, or timeout).
+        Total wall time is bounded by ``timeout``.
+        """
+        import time
+
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                wpid, _ = os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                # Already reaped by someone else.
+                return
+            except OSError:
+                return
+            if wpid != 0:
+                # Reaped successfully.
+                return
+            if time.monotonic() >= deadline:
+                # Give up; the process really is stuck (e.g. uninterruptible
+                # sleep in a kernel driver). Caller can't do better than us.
+                return
+            time.sleep(0.01)
 
     @staticmethod
     def _kill_process(pid: int) -> None:

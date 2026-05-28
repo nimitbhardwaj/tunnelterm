@@ -1,0 +1,78 @@
+/*
+ * Nerd Font webfonts vendored locally.
+ *
+ * Each family declaration uses local() first so an installed copy on the
+ * user's system wins (no extra download). The web copy is the fallback.
+ *
+ * The "Nerd Font Symbols" family is loaded last and listed as a fallback
+ * in all PTY font stacks so icons render even if the user picks a font
+ * that doesn't include the icon glyphs.
+ */
+
+/* ---------- FiraCode Nerd Font ---------- */
+@font-face {
+  font-family: "FiraCode Nerd Font";
+  src: local("FiraCodeNerdFont-Regular"),
+       url("fonts/FiraCodeNerdFont-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "FiraCode Nerd Font";
+  src: local("FiraCodeNerdFont-Bold"),
+       url("fonts/FiraCodeNerdFont-Bold.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* ---------- JetBrains Mono Nerd Font ---------- */
+@font-face {
+  font-family: "JetBrainsMono Nerd Font";
+  src: local("JetBrainsMonoNerdFont-Regular"),
+       url("fonts/JetBrainsMonoNerdFont-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "JetBrainsMono Nerd Font";
+  src: local("JetBrainsMonoNerdFont-Bold"),
+       url("fonts/JetBrainsMonoNerdFont-Bold.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* ---------- Hack Nerd Font ---------- */
+@font-face {
+  font-family: "Hack Nerd Font";
+  src: local("HackNerdFont-Regular"),
+       url("fonts/HackNerdFont-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Hack Nerd Font";
+  src: local("HackNerdFont-Bold"),
+       url("fonts/HackNerdFont-Bold.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* ---------- Symbols Nerd Font (icons-only fallback) ---------- */
+@font-face {
+  font-family: "Symbols Nerd Font";
+  src: local("SymbolsNerdFont-Regular"),
+       url("fonts/SymbolsNerdFont-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  /* Restrict to the Private Use Area ranges where Nerd Font glyphs live, so
+     this font is only consulted when an earlier family has no glyph for the
+     codepoint. This prevents Symbols overriding normal glyphs. */
+  unicode-range: U+E000-F8FF, U+F0000-FFFFD;
+}

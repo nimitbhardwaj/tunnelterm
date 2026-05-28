@@ -142,13 +142,46 @@ setInterval(() => {
 // ============================================================
 // Terminal
 // ============================================================
-function buildTerminal() {
+
+/**
+ * Build the CSS font-family stack for the terminal.
+ *
+ * "Symbols Nerd Font" is appended unconditionally so that even if the user
+ * picks a font without icon glyphs, the Private-Use-Area characters used by
+ * powerlevel10k, lazygit, etc., still render. The @font-face for "Symbols
+ * Nerd Font" in fonts.css uses a unicode-range that restricts it to the PUA,
+ * so it never overrides regular text glyphs.
+ */
+function buildFontStack(family) {
+  return `"${family}", "Symbols Nerd Font", ui-monospace, "SF Mono", Menlo, monospace`;
+}
+
+/**
+ * Wait for a font to actually be loaded (downloaded and parsed) at the
+ * current font size before applying it. Without this, the first paint uses
+ * fallback metrics and looks wrong until the next event.
+ */
+async function ensureFontLoaded(family, size) {
+  if (!document.fonts || !document.fonts.load) return;
+  try {
+    await document.fonts.load(`${size}px "${family}"`);
+    await document.fonts.load(`bold ${size}px "${family}"`);
+    await document.fonts.load(`16px "Symbols Nerd Font"`);
+  } catch (e) {
+    console.warn("font load failed:", e);
+  }
+}
+
+async function buildTerminal() {
+  // Preload the configured font so the first frame has correct metrics.
+  await ensureFontLoaded(state.prefs.fontFamily, state.prefs.fontSize);
+
   const theme = findTheme(state.prefs.theme);
   state.term = new Terminal({
     cursorBlink: state.prefs.cursorBlink,
     cursorStyle: state.prefs.cursorStyle,
     fontSize: state.prefs.fontSize,
-    fontFamily: state.prefs.fontFamily + ", ui-monospace, monospace",
+    fontFamily: buildFontStack(state.prefs.fontFamily),
     fontWeight: state.prefs.fontWeight,
     letterSpacing: state.prefs.letterSpacing,
     lineHeight: state.prefs.lineHeight,
@@ -189,12 +222,13 @@ function buildTerminal() {
 
   state.term.open(els.term);
 
-  // WebGL renderer (best-effort)
+  // WebGL renderer (best-effort).
   try {
     if (window.WebglAddon) {
-      state.webglAddon = new WebglAddon.WebglAddon();
-      state.webglAddon.onContextLoss(() => state.webglAddon.dispose());
-      state.term.loadAddon(state.webglAddon);
+      const addon = new WebglAddon.WebglAddon();
+      addon.onContextLoss(() => { try { addon.dispose(); } catch {} if (state.webglAddon === addon) state.webglAddon = null; });
+      state.term.loadAddon(addon);
+      state.webglAddon = addon;
     }
   } catch (e) {
     console.warn("WebGL renderer unavailable:", e);
@@ -300,43 +334,81 @@ function updateThemeSelection() {
   });
 }
 
-function setFont(family) {
+async function setFont(family) {
   state.prefs.fontFamily = family;
   savePrefs(state.prefs);
-  if (state.term) {
-    state.term.options.fontFamily = family + ", ui-monospace, monospace";
-    refit();
-  }
+  if (!state.term) return;
+  // Wait for the font to be available before telling xterm to use it,
+  // otherwise the WebGL glyph atlas gets built from the fallback metrics.
+  await ensureFontLoaded(family, state.prefs.fontSize);
+  state.term.options.fontFamily = buildFontStack(family);
+  await rebuildGlyphCache();
 }
 
-function setFontSize(px) {
+async function setFontSize(px) {
   px = Math.max(8, Math.min(32, px));
   state.prefs.fontSize = px;
   savePrefs(state.prefs);
-  if (state.term) {
-    state.term.options.fontSize = px;
-    els.fontSizeValue && (els.fontSizeValue.textContent = px + "px");
-    els.fontSizeSlider && (els.fontSizeSlider.value = px);
-    refit();
-  }
+  if (!state.term) return;
+  state.term.options.fontSize = px;
+  if (els.fontSizeValue) els.fontSizeValue.textContent = px + "px";
+  if (els.fontSizeSlider) els.fontSizeSlider.value = px;
+  await ensureFontLoaded(state.prefs.fontFamily, px);
+  await rebuildGlyphCache();
 }
 
-function setFontWeight(w) {
+async function setFontWeight(w) {
   state.prefs.fontWeight = w;
   savePrefs(state.prefs);
-  if (state.term) { state.term.options.fontWeight = w; refit(); }
+  if (!state.term) return;
+  state.term.options.fontWeight = w;
+  await rebuildGlyphCache();
 }
 
 function setLetterSpacing(v) {
   state.prefs.letterSpacing = v;
   savePrefs(state.prefs);
-  if (state.term) { state.term.options.letterSpacing = v; refit(); }
+  if (state.term) { state.term.options.letterSpacing = v; rebuildGlyphCache(); }
 }
 
 function setLineHeight(v) {
   state.prefs.lineHeight = v;
   savePrefs(state.prefs);
-  if (state.term) { state.term.options.lineHeight = v; refit(); }
+  if (state.term) { state.term.options.lineHeight = v; rebuildGlyphCache(); }
+}
+
+/**
+ * Force xterm to re-rasterize all glyphs after a font / size / weight change.
+ *
+ * Uses xterm's public `clearTextureAtlas()` API (available since xterm 5.3)
+ * which invalidates the active renderer's glyph cache (WebGL or DOM) and
+ * triggers an internal full-refresh on the next frame. This is the canonical
+ * pattern used by production xterm.js consumers (tabby, opencove, etc.).
+ *
+ * We additionally:
+ *   * wait for the *new* font to be downloaded before invalidating, so xterm's
+ *     CharSizeService measures the correct glyph width on the next frame;
+ *   * give the WebGL pipeline one animation frame to settle;
+ *   * refit so the cell grid is recomputed for the new metrics;
+ *   * call refresh() once more for belt-and-braces.
+ */
+async function rebuildGlyphCache() {
+  if (!state.term) return;
+  await ensureFontLoaded(state.prefs.fontFamily, state.prefs.fontSize);
+
+  // Yield one frame so xterm has applied the option changes.
+  await new Promise((r) => requestAnimationFrame(() => r()));
+
+  // Drop the glyph cache. This works whether WebGL or DOM renderer is active.
+  try { state.term.clearTextureAtlas(); } catch (e) { /* older xterm */ }
+
+  // Recompute cell grid for the new metrics.
+  if (state.fitAddon) {
+    try { state.fitAddon.fit(); } catch {}
+  }
+
+  // Force a full repaint of the visible buffer with new glyphs.
+  try { state.term.refresh(0, state.term.rows - 1); } catch {}
 }
 
 function setCursorStyle(s) {
@@ -486,6 +558,12 @@ function disconnect() {
 function handleControl(d) {
   switch (d[CTRL]) {
     case "process_exit":
+      // The shell terminated (Ctrl+D, `exit`, crash, etc.). The server will
+      // close the WebSocket right after this message; disable reconnect so the
+      // user gets the overlay instead of a spinning "Reconnecting…" status.
+      state.wantConnected = false;
+      if (state.reconnectTimer) { clearTimeout(state.reconnectTimer); state.reconnectTimer = null; }
+      setStatus("disconnected");
       showOverlay({
         title: "Process exited",
         message: "The shell process has ended.",
@@ -493,6 +571,8 @@ function handleControl(d) {
       });
       break;
     case "spawn_error":
+      state.wantConnected = false;
+      if (state.reconnectTimer) { clearTimeout(state.reconnectTimer); state.reconnectTimer = null; }
       showOverlay({
         title: "Could not start command",
         message: d.message || "The server failed to start the configured command.",
@@ -890,7 +970,7 @@ function wireLogin() {
       }
       els.login.style.display = "none";
       els.terminal.classList.add("show");
-      buildTerminal();
+      await buildTerminal();
       buildThemeGrid();
       buildFontSelect();
       connect();

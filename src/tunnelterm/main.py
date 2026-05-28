@@ -409,10 +409,20 @@ async def _bridge(ws: WebSocket, pty_mgr: PtyManager, client_ip: str) -> None:
         except asyncio.CancelledError:
             pass
 
+        # Notify client and close the WebSocket cleanly. Without an explicit
+        # ws.close() the server returns from the handler, FastAPI tears down
+        # the connection without sending a close frame, and the browser sees
+        # an abnormal disconnect (1006) instead of our process_exit message.
         try:
             await ws.send_json({CONTROL_KEY: "process_exit"})
         except Exception:
             pass
+        try:
+            # 1000 = normal closure. Skip if already closed.
+            if ws.client_state.name != "DISCONNECTED":
+                await ws.close(code=1000)
+        except Exception as e:
+            logger.debug("ws.close() error: %s", e)
         logger.info("Connection closed for %s", client_ip)
 
 

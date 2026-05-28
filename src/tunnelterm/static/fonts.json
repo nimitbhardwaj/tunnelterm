@@ -1,21 +1,20 @@
 {
-  "default": "JetBrains Mono",
+  "default": "JetBrainsMono Nerd Font",
   "fonts": [
-    { "family": "JetBrains Mono",            "displayName": "JetBrains Mono" },
-    { "family": "JetBrainsMono Nerd Font",   "displayName": "JetBrains Mono (Nerd Font)" },
-    { "family": "Fira Code",                 "displayName": "Fira Code" },
-    { "family": "FiraCode Nerd Font",        "displayName": "Fira Code (Nerd Font)" },
-    { "family": "Hack",                      "displayName": "Hack" },
-    { "family": "Hack Nerd Font",            "displayName": "Hack (Nerd Font)" },
-    { "family": "Source Code Pro",           "displayName": "Source Code Pro" },
-    { "family": "IBM Plex Mono",             "displayName": "IBM Plex Mono" },
-    { "family": "Cascadia Code",             "displayName": "Cascadia Code" },
-    { "family": "Cascadia Mono",             "displayName": "Cascadia Mono" },
+    { "family": "JetBrainsMono Nerd Font",   "displayName": "JetBrains Mono (Nerd Font)",  "bundled": true },
+    { "family": "FiraCode Nerd Font",        "displayName": "Fira Code (Nerd Font)",       "bundled": true },
+    { "family": "Hack Nerd Font",            "displayName": "Hack (Nerd Font)",            "bundled": true },
+    { "family": "JetBrains Mono",            "displayName": "JetBrains Mono (system)" },
+    { "family": "Fira Code",                 "displayName": "Fira Code (system)" },
+    { "family": "Hack",                      "displayName": "Hack (system)" },
+    { "family": "Source Code Pro",           "displayName": "Source Code Pro (system)" },
+    { "family": "IBM Plex Mono",             "displayName": "IBM Plex Mono (system)" },
+    { "family": "Cascadia Code",             "displayName": "Cascadia Code (system)" },
     { "family": "Menlo",                     "displayName": "Menlo (macOS)" },
     { "family": "SF Mono",                   "displayName": "SF Mono (macOS)" },
     { "family": "Consolas",                  "displayName": "Consolas (Windows)" },
-    { "family": "Ubuntu Mono",               "displayName": "Ubuntu Mono" },
-    { "family": "DejaVu Sans Mono",          "displayName": "DejaVu Sans Mono" },
-    { "family": "ui-monospace, monospace",   "displayName": "System Mono" }
+    { "family": "Ubuntu Mono",               "displayName": "Ubuntu Mono (Linux)" },
+    { "family": "DejaVu Sans Mono",          "displayName": "DejaVu Sans Mono (system)" },
+    { "family": "ui-monospace",              "displayName": "System Mono" }
   ]
 }
