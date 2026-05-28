@@ -1,0 +1,66 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  id-token: write   # for PyPI Trusted Publishing (OIDC)
+
+jobs:
+  publish:
+    name: Build & publish to PyPI
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # setuptools-scm reads the tag to derive the version.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        run: uv sync
+
+      # Re-run quality gates before publishing so a tag push can never ship
+      # broken code, even if someone tagged a commit that bypassed CI.
+      - name: Lint with ruff
+        run: uv run ruff check .
+
+      - name: Type-check with pyright
+        run: uv run pyright src/
+
+      - name: Test with pytest
+        run: uv run pytest tests/
+
+      - name: Build package
+        run: uv build
+
+      - name: Verify wheel version matches the git tag
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME#v}"
+          WHEEL=$(ls dist/tunnelterm-*.whl)
+          # Wheel filename is tunnelterm-<version>-py3-none-any.whl
+          WHEEL_VERSION=$(basename "$WHEEL" | sed -E 's/^tunnelterm-([^-]+)-.*$/\1/')
+          echo "git tag version: $TAG"
+          echo "built wheel    : $WHEEL_VERSION"
+          if [ "$TAG" != "$WHEEL_VERSION" ]; then
+            echo "::error::tag ($TAG) and built wheel version ($WHEEL_VERSION) disagree" >&2
+            exit 1
+          fi
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # If a tag is re-pushed or this job is re-run, treat already-uploaded
+          # files as success instead of failing the whole release.
+          skip-existing: true

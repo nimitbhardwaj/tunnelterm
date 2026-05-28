@@ -8,6 +8,7 @@ import os
 import sys
 from pathlib import Path
 
+from tunnelterm import __version__
 from tunnelterm.auth import (
     CONFIG_PATH,
     ENV_PASSWORD_VAR,
@@ -19,8 +20,6 @@ from tunnelterm.auth import (
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 4200
-
-__version__ = "0.1.0"
 
 
 def main() -> None:

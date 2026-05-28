@@ -8,26 +8,33 @@ dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.34.0",
 ]
+# Version is derived from the latest git tag by setuptools-scm.
+# - Tagged commit "v1.2.3" -> 1.2.3
+# - Untagged HEAD          -> 1.2.4.dev3+g<sha>  (post-release scheme)
+# CI strips the local "+g<sha>" suffix because PyPI rejects local versions.
 dynamic = ["version"]
 
 [project.scripts]
 tunnelterm = "tunnelterm.__main__:main"
 
 [build-system]
-requires = ["setuptools>=61.0", "setuptools-scm"]
+requires = ["setuptools>=64", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = { find = { where = ["src"] } }
 package-data = { tunnelterm = ["static/**/*"] }
 
-[tool.setuptools.dynamic]
-version = { attr = "tunnelterm.__init__.__version__" }
-
 [tool.setuptools_scm]
-fallback_version = "0.1.0"
-version_scheme = "post-release"
+# Tag pattern: matches "v1.2.3", "v1.2.3rc1", etc. The leading "v" is stripped.
+tag_regex = "^v(?P<version>\\d+(?:\\.\\d+)*(?:[a-zA-Z]+\\d*)?)$"
+# When building from an untagged commit (e.g. on master), produce a version
+# like "0.1.1.dev3" rather than "0.1.0.post3.dev0+g<sha>".
+version_scheme = "guess-next-dev"
+# Strip the "+g<sha>" local-version suffix; PyPI rejects local versions.
 local_scheme = "no-local-version"
+# Fallback when building from a source tarball with no git history.
+fallback_version = "0.0.0"
 
 [tool.uv]
 package = true

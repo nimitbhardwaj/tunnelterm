@@ -1,20 +1,29 @@
-name: Release
+name: CI
 
 on:
   push:
-    tags:
-      - "v*"
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
 
 permissions:
   contents: read
-  id-token: write
+
+concurrency:
+  # Cancel superseded runs on the same ref.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build-and-publish:
+  test:
+    name: Lint, type-check, test
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # setuptools-scm needs full history + tags to derive a version.
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -35,8 +44,6 @@ jobs:
       - name: Test with pytest
         run: uv run pytest tests/
 
-      - name: Build package
+      - name: Build (smoke test)
+        # Ensures the package actually builds; doesn't publish.
         run: uv build
-
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
