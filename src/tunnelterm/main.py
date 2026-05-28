@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request, WebSocket
@@ -19,7 +19,12 @@ from tunnelterm.auth import (
     get_authenticator,
     origin_allowed,
 )
-from tunnelterm.pty_manager import PtyManager, PtySpawnError
+from tunnelterm.pty_manager import PtySpawnError
+from tunnelterm.session import (
+    DEFAULT_IDLE_TIMEOUT_SECONDS,
+    PtySession,
+    SessionRegistry,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -84,11 +89,34 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 # ---------- app factory ----------
 
 
-def create_app(command: str, allowed_origins: list[str] | None = None) -> FastAPI:
+def create_app(
+    command: str,
+    allowed_origins: list[str] | None = None,
+    idle_timeout: float = DEFAULT_IDLE_TIMEOUT_SECONDS,
+) -> FastAPI:
     """Build the FastAPI app with the given runtime config."""
-    app = FastAPI(title="tunnelterm")
+    registry = SessionRegistry(command=command, idle_timeout=idle_timeout)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        loop = asyncio.get_running_loop()
+        registry.start(loop)
+        logger.info(
+            "session registry online (idle_timeout=%.0fs, command=%r)",
+            idle_timeout,
+            command,
+        )
+        try:
+            yield
+        finally:
+            await registry.shutdown()
+            logger.info("session registry shut down")
+
+    app = FastAPI(title="tunnelterm", lifespan=lifespan)
     app.state.command = command
     app.state.allowed_origins = list(allowed_origins or [])
+    app.state.idle_timeout = idle_timeout
+    app.state.registry = registry
 
     app.add_middleware(SecurityHeadersMiddleware)
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -104,6 +132,10 @@ def create_app(command: str, allowed_origins: list[str] | None = None) -> FastAP
     @app.websocket("/auth")
     async def auth_ws(ws: WebSocket) -> None:
         await _handle_auth(ws)
+
+    @app.websocket("/verify")
+    async def verify_ws(ws: WebSocket) -> None:
+        await _handle_verify(ws)
 
     @app.websocket("/logout")
     async def logout_ws(ws: WebSocket) -> None:
@@ -171,8 +203,33 @@ async def _handle_auth(ws: WebSocket) -> None:
     await ws.close()
 
 
+async def _handle_verify(ws: WebSocket) -> None:
+    """Check whether a stored client token is still valid.
+
+    Used by the "Remember me" flow on page load: client sends ``{"token": ...}``
+    and gets back ``{"ok": true|false}``. Does not consume a rate-limit slot
+    because the token is opaque and not a brute-forceable secret in the same
+    way a password is.
+    """
+    if not _check_origin(ws):
+        await ws.close(code=1008)
+        return
+    await ws.accept()
+    try:
+        data = await ws.receive_json()
+    except Exception:
+        await ws.close()
+        return
+    token = data.get("token", "") if isinstance(data, dict) else ""
+    ok = isinstance(token, str) and bool(token) and get_authenticator().check_auth(token)
+    try:
+        await ws.send_json({"ok": ok})
+    finally:
+        await ws.close()
+
+
 async def _handle_logout(ws: WebSocket) -> None:
-    """Revoke a token."""
+    """Revoke a token and discard its sticky PTY session."""
     if not _check_origin(ws):
         await ws.close(code=1008)
         return
@@ -185,6 +242,9 @@ async def _handle_logout(ws: WebSocket) -> None:
     token = data.get("token", "") if isinstance(data, dict) else ""
     if isinstance(token, str) and token:
         get_authenticator().revoke(token)
+        registry: SessionRegistry | None = getattr(ws.app.state, "registry", None)
+        if registry is not None:
+            registry.discard(token)
     await ws.send_json({"ok": True})
     await ws.close()
 
@@ -208,7 +268,7 @@ def _extract_token(ws: WebSocket) -> str | None:
 
 
 async def _handle_terminal(ws: WebSocket) -> None:
-    """Authenticate, spawn a PTY, and bridge to the WebSocket."""
+    """Authenticate, attach to a (new or existing) sticky session, bridge IO."""
     if not _check_origin(ws):
         logger.warning("Rejecting /ws from disallowed origin %r", ws.headers.get("origin"))
         await ws.close(code=1008)
@@ -229,18 +289,19 @@ async def _handle_terminal(ws: WebSocket) -> None:
         return
 
     if not auth.try_acquire_session(token):
-        logger.warning("Token already in use by another session (ip=%s)", client_ip)
+        logger.warning("Token already in use by another connection (ip=%s)", client_ip)
         await ws.close(code=1008)
         return
 
     # Accept the handshake by echoing back our subprotocol identifier.
     await ws.accept(subprotocol=WS_SUBPROTOCOL)
-    logger.info("Connection from %s", client_ip)
 
-    command: str = getattr(ws.app.state, "command", "")
-    pty_mgr = PtyManager(command=command)
+    registry: SessionRegistry = ws.app.state.registry
+    loop = asyncio.get_running_loop()
+    # Look up first so we know whether we're reattaching or creating.
+    was_existing = registry.get(token) is not None
     try:
-        pty_mgr.spawn()
+        session = registry.get_or_create(token, loop=loop)
     except PtySpawnError as e:
         logger.error("PTY spawn failed: %s", e)
         try:
@@ -251,94 +312,83 @@ async def _handle_terminal(ws: WebSocket) -> None:
         auth.release_session(token)
         return
 
-    await _bridge(ws, pty_mgr, client_ip)
-    auth.release_session(token)
+    logger.info(
+        "Connection from %s (%s session for token=%s...)",
+        client_ip,
+        "reattaching to" if was_existing else "new",
+        token[:8],
+    )
+
+    try:
+        await _bridge(ws, session, client_ip, replay=was_existing)
+    finally:
+        auth.release_session(token)
 
 
-async def _bridge(ws: WebSocket, pty_mgr: PtyManager, client_ip: str) -> None:
-    """Bidirectional bridge between WebSocket and PTY master fd."""
-    loop = asyncio.get_running_loop()
+# ---------- bridge ----------
+
+
+async def _bridge(
+    ws: WebSocket,
+    session: PtySession,
+    client_ip: str,
+    replay: bool,
+) -> None:
+    """Pump bytes between ``ws`` and ``session`` until either side disconnects.
+
+    The session keeps owning the PTY; this function attaches a queue-pushing
+    callback so we receive PTY output, and forwards ``ws.receive_text`` into
+    ``session.write``. When the WebSocket goes away, the session is *detached*
+    (PTY keeps running) so a refresh can reattach.
+    """
     stop_event = asyncio.Event()
-    # Bounded queue so a slow client back-pressures the reader instead of
-    # silently dropping output.
-    read_queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=512)
-    reader_paused = False
-    pending_puts: set[asyncio.Task[None]] = set()
+    # Bounded queue so a slow client back-pressures (we drop oldest if it stays
+    # full; a sticky-session client that vanished is reaped on idle, not here).
+    out_queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=1024)
 
-    master_fd = pty_mgr.master_fd
-    reader_registered = False
-
-    def _resume_reader() -> None:
-        nonlocal reader_paused
-        if reader_paused and pty_mgr.master_fd is not None:
+    def _on_data(chunk: bytes) -> None:
+        """Session data callback (runs on the loop thread)."""
+        if not chunk:
+            # PTY EOF -> shell exited. Signal pty_to_ws to drain and stop.
             try:
-                loop.add_reader(pty_mgr.master_fd, _on_pty_readable)
-                reader_paused = False
-            except (ValueError, OSError):
-                pass
-
-    def _pause_reader() -> None:
-        nonlocal reader_paused
-        if not reader_paused and pty_mgr.master_fd is not None:
-            try:
-                loop.remove_reader(pty_mgr.master_fd)
-                reader_paused = True
-            except (ValueError, OSError):
-                pass
-
-    def _on_pty_readable() -> None:
-        """Handle readable PTY fd; pushes into read_queue. Runs on the loop."""
-        fd = pty_mgr.master_fd
-        if fd is None:
-            try:
-                read_queue.put_nowait(None)
+                out_queue.put_nowait(None)
             except asyncio.QueueFull:
                 pass
             return
         try:
-            data = os.read(fd, 4096)
-        except (OSError, ValueError):
-            try:
-                read_queue.put_nowait(None)
-            except asyncio.QueueFull:
-                pass
-            return
-        if not data:
-            try:
-                read_queue.put_nowait(None)
-            except asyncio.QueueFull:
-                pass
-            return
-        try:
-            read_queue.put_nowait(data)
+            out_queue.put_nowait(chunk)
         except asyncio.QueueFull:
-            # Back-pressure: pause reading until consumer drains.
-            _pause_reader()
-            # Push the chunk back via a blocking put on the loop instead of dropping.
-            # We can't await here (sync callback), so schedule a task to do it.
-            task = loop.create_task(_blocking_put(data))
-            pending_puts.add(task)
-            task.add_done_callback(pending_puts.discard)
+            # Slow consumer; drop the oldest queued item to maintain liveness.
+            try:
+                out_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+            try:
+                out_queue.put_nowait(chunk)
+            except asyncio.QueueFull:
+                pass
 
-    async def _blocking_put(data: bytes) -> None:
-        try:
-            await read_queue.put(data)
-        except asyncio.CancelledError:
-            return
-        # Now drained enough; resume.
-        _resume_reader()
+    # Replay scrollback to the new client *before* attaching the live listener,
+    # so the replay is sent in order ahead of any new bytes.
+    if replay:
+        snapshot = session.replay_buffer()
+        if snapshot:
+            try:
+                await ws.send_bytes(snapshot)
+            except Exception as e:
+                logger.debug("scrollback replay send failed: %s", e)
 
-    if master_fd is not None:
-        try:
-            loop.add_reader(master_fd, _on_pty_readable)
-            reader_registered = True
-        except (ValueError, OSError) as e:
-            logger.debug("add_reader failed: %s", e)
+    session.attach(_on_data)
+
+    # Re-apply last known terminal dimensions so the shell isn't confused after
+    # reattach. The client will also send its own resize within a few ms.
+    cols, rows = session.dimensions
+    session.resize(cols=cols, rows=rows)
 
     async def pty_to_ws() -> None:
         while True:
             try:
-                data = await read_queue.get()
+                data = await out_queue.get()
             except asyncio.CancelledError:
                 break
             if data is None:
@@ -350,26 +400,23 @@ async def _bridge(ws: WebSocket, pty_mgr: PtyManager, client_ip: str) -> None:
             except Exception as e:
                 logger.debug("ws.send_bytes failed: %s", e)
                 break
-            # If we were back-pressured, see if the queue has space again.
-            if reader_paused and read_queue.qsize() < read_queue.maxsize // 2:
-                _resume_reader()
         stop_event.set()
 
     async def ws_to_pty() -> None:
         try:
             while True:
                 msg = await ws.receive_text()
-                # Only treat as control frame if it parses as a dict AND has our
-                # private discriminator. Anything else goes straight to the PTY.
+                # Treat as a control frame only if it parses as a dict AND has
+                # our discriminator key. Anything else is opaque shell input.
                 if msg.startswith("{") and CONTROL_KEY in msg:
                     try:
                         data = json.loads(msg)
                     except (json.JSONDecodeError, ValueError):
                         data = None
                     if isinstance(data, dict) and CONTROL_KEY in data:
-                        await _handle_control(data, pty_mgr)
+                        await _handle_control(data, session)
                         continue
-                await pty_mgr.write_to_pty(msg.encode())
+                await session.write(msg.encode())
         except asyncio.CancelledError:
             pass
         except Exception as e:
@@ -380,22 +427,24 @@ async def _bridge(ws: WebSocket, pty_mgr: PtyManager, client_ip: str) -> None:
     pty_to_ws_task = asyncio.create_task(pty_to_ws())
     ws_to_pty_task = asyncio.create_task(ws_to_pty())
 
+    pty_died = False
     try:
         await stop_event.wait()
     except asyncio.CancelledError:
         logger.debug("ws_handler cancelled")
     finally:
-        if reader_registered and pty_mgr.master_fd is not None:
-            try:
-                loop.remove_reader(pty_mgr.master_fd)
-            except (ValueError, OSError):
-                pass
+        # Detach BEFORE checking PTY liveness; we don't want stray writes.
+        session.detach(_on_data)
 
-        try:
-            pty_mgr.close()
-        except Exception as e:
-            logger.debug("pty.close() error: %s", e)
+        # If the PTY itself died (shell exited / crashed), tear the session
+        # down so the next attach with this token spawns a fresh shell.
+        pty_died = not session.is_alive()
+        if pty_died:
+            registry: SessionRegistry | None = getattr(ws.app.state, "registry", None)
+            if registry is not None:
+                registry.discard(session.token)
 
+        # Cancel any in-flight bridge tasks.
         for task in (pty_to_ws_task, ws_to_pty_task):
             if not task.done():
                 task.cancel()
@@ -409,24 +458,37 @@ async def _bridge(ws: WebSocket, pty_mgr: PtyManager, client_ip: str) -> None:
         except asyncio.CancelledError:
             pass
 
-        # Notify client and close the WebSocket cleanly. Without an explicit
-        # ws.close() the server returns from the handler, FastAPI tears down
-        # the connection without sending a close frame, and the browser sees
-        # an abnormal disconnect (1006) instead of our process_exit message.
-        try:
-            await ws.send_json({CONTROL_KEY: "process_exit"})
-        except Exception:
-            pass
-        try:
-            # 1000 = normal closure. Skip if already closed.
-            if ws.client_state.name != "DISCONNECTED":
-                await ws.close(code=1000)
-        except Exception as e:
-            logger.debug("ws.close() error: %s", e)
-        logger.info("Connection closed for %s", client_ip)
+        if pty_died:
+            # Notify client and close cleanly. Without an explicit ws.close()
+            # FastAPI tears down the TCP socket without a WebSocket close
+            # frame, which the browser sees as code 1006.
+            try:
+                await ws.send_json({CONTROL_KEY: "process_exit"})
+            except Exception:
+                pass
+            try:
+                if ws.client_state.name != "DISCONNECTED":
+                    await ws.close(code=1000)
+            except Exception as e:
+                logger.debug("ws.close() error: %s", e)
+            logger.info(
+                "Session ended for %s (token=%s...; PTY exited)",
+                client_ip,
+                session.token[:8],
+            )
+        else:
+            # Soft disconnect (refresh / network blip). PTY stays alive, the
+            # idle reaper will collect it if no one reattaches in time.
+            logger.info(
+                "Connection detached for %s (token=%s...; session kept alive)",
+                client_ip,
+                session.token[:8],
+            )
+        # Use `pty_died` to silence ruff's "assigned but not used" warning.
+        _ = pty_died
 
 
-async def _handle_control(msg: dict, pty_mgr: PtyManager) -> None:
+async def _handle_control(msg: dict, session: PtySession) -> None:
     """Process a client -> server control frame."""
     kind = msg.get(CONTROL_KEY)
     if kind == "resize":
@@ -435,9 +497,8 @@ async def _handle_control(msg: dict, pty_mgr: PtyManager) -> None:
             rows = int(msg.get("rows", 0))
         except (TypeError, ValueError):
             return
-        pty_mgr.resize(cols=cols, rows=rows)
+        session.resize(cols=cols, rows=rows)
     elif kind == "ping":
-        # No-op; client uses RTT measurement via separate echo path.
         pass
 
 
@@ -455,9 +516,14 @@ def run(
     port: int = 4200,
     log_level: str = "info",
     allowed_origins: list[str] | None = None,
+    idle_timeout: float = DEFAULT_IDLE_TIMEOUT_SECONDS,
 ) -> None:
     """Build the app and run uvicorn (blocking)."""
     import uvicorn
 
-    application = create_app(command=command, allowed_origins=allowed_origins or [])
+    application = create_app(
+        command=command,
+        allowed_origins=allowed_origins or [],
+        idle_timeout=idle_timeout,
+    )
     uvicorn.run(application, host=host, port=port, log_level=log_level, access_log=False)

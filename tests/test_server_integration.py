@@ -279,3 +279,141 @@ async def test_shutdown_under_idle_connection_is_fast() -> None:
         if proc.poll() is None:
             proc.terminate()
             proc.wait(timeout=3)
+
+
+async def test_verify_endpoint_validates_token() -> None:
+    """/verify accepts a valid token, rejects an invalid one."""
+    from websockets.legacy.client import connect
+
+    port = _free_port()
+    proc = _start_server(port)
+    try:
+        token = (await _do_auth(port, "testpass"))["token"]
+
+        # Valid token.
+        async with connect(f"ws://127.0.0.1:{port}/verify") as ws:
+            await ws.send(json.dumps({"token": token}))
+            resp = json.loads(await ws.recv())
+        assert resp == {"ok": True}
+
+        # Invalid token.
+        async with connect(f"ws://127.0.0.1:{port}/verify") as ws:
+            await ws.send(json.dumps({"token": "not-a-real-token"}))
+            resp = json.loads(await ws.recv())
+        assert resp == {"ok": False}
+
+        # Missing token.
+        async with connect(f"ws://127.0.0.1:{port}/verify") as ws:
+            await ws.send(json.dumps({}))
+            resp = json.loads(await ws.recv())
+        assert resp == {"ok": False}
+    finally:
+        proc.terminate()
+        proc.wait(timeout=3)
+
+
+async def test_refresh_preserves_shell_state() -> None:
+    """The same token across two /ws connects must hit the same PTY process.
+
+    Tests the "page refresh keeps your shell" feature: set a shell variable in
+    the first connection, disconnect, reconnect with the same token, and
+    confirm the variable survives.
+    """
+    from websockets.legacy.client import connect
+
+    port = _free_port()
+    proc = _start_server(port)
+    try:
+        token = (await _do_auth(port, "testpass"))["token"]
+
+        # === First connection ===
+        async with connect(
+            f"ws://127.0.0.1:{port}/ws",
+            subprotocols=["tunnelterm.v1.token", token],  # type: ignore[arg-type]
+        ) as ws:
+            await asyncio.sleep(0.4)
+            await ws.send("MARKER=preserved-across-refresh\n")
+            await asyncio.sleep(0.4)
+            # Drain.
+            try:
+                while True:
+                    await asyncio.wait_for(ws.recv(), timeout=0.3)
+            except asyncio.TimeoutError:
+                pass
+        # ws closed; bash should still be alive in the session.
+
+        await asyncio.sleep(0.3)
+
+        # === Reconnect with same token ===
+        async with connect(
+            f"ws://127.0.0.1:{port}/ws",
+            subprotocols=["tunnelterm.v1.token", token],  # type: ignore[arg-type]
+        ) as ws:
+            # Replay buffer should arrive first.
+            await asyncio.sleep(0.3)
+            replay_chunks: list[bytes] = []
+            try:
+                while True:
+                    msg = await asyncio.wait_for(ws.recv(), timeout=0.4)
+                    if isinstance(msg, bytes):
+                        replay_chunks.append(msg)
+            except asyncio.TimeoutError:
+                pass
+            replay = b"".join(replay_chunks)
+            assert b"MARKER=preserved-across-refresh" in replay, (
+                f"scrollback replay missing the marker; got: {replay[-200:]!r}"
+            )
+
+            # Confirm the shell process actually still has the variable.
+            await ws.send("echo TEST-$MARKER\n")
+            seen = b""
+            deadline = asyncio.get_event_loop().time() + 3.0
+            while asyncio.get_event_loop().time() < deadline:
+                try:
+                    msg = await asyncio.wait_for(ws.recv(), timeout=0.4)
+                except asyncio.TimeoutError:
+                    continue
+                if isinstance(msg, bytes):
+                    seen += msg
+                if b"TEST-preserved-across-refresh" in seen:
+                    break
+            assert b"TEST-preserved-across-refresh" in seen, (
+                f"shell variable did not survive disconnect; tail: {seen[-200:]!r}"
+            )
+    finally:
+        proc.terminate()
+        proc.wait(timeout=3)
+
+
+async def test_logout_kills_sticky_session() -> None:
+    """After /logout, the same token is rejected AND the PTY is gone."""
+    from websockets.legacy.client import connect
+
+    port = _free_port()
+    proc = _start_server(port)
+    try:
+        token = (await _do_auth(port, "testpass"))["token"]
+
+        # Establish a sticky session.
+        async with connect(
+            f"ws://127.0.0.1:{port}/ws",
+            subprotocols=["tunnelterm.v1.token", token],  # type: ignore[arg-type]
+        ) as ws:
+            await asyncio.sleep(0.3)
+            await ws.send("MARKER=must-not-survive-logout\n")
+            await asyncio.sleep(0.3)
+
+        # Logout.
+        async with connect(f"ws://127.0.0.1:{port}/logout") as ws:
+            await ws.send(json.dumps({"token": token}))
+            resp = json.loads(await ws.recv())
+        assert resp == {"ok": True}
+
+        # Verify token is dead.
+        async with connect(f"ws://127.0.0.1:{port}/verify") as ws:
+            await ws.send(json.dumps({"token": token}))
+            resp = json.loads(await ws.recv())
+        assert resp == {"ok": False}
+    finally:
+        proc.terminate()
+        proc.wait(timeout=3)

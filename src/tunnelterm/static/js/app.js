@@ -887,7 +887,7 @@ function wireDrawer() {
         w.onmessage = () => res(); w.onerror = () => res(); w.onclose = () => res();
       });
     } catch {}
-    try { localStorage.removeItem(TOKEN_KEY); } catch {}
+    clearStoredToken();
     disconnect();
     location.reload();
   };
@@ -937,8 +937,84 @@ function wireRightClick() {
 }
 
 // ============================================================
-// Login
+// Login & token persistence
 // ============================================================
+
+/**
+ * Persist a token. Long-lived (`localStorage`, survives browser restart) when
+ * the user ticked "Remember me", otherwise tab-scoped (`sessionStorage`).
+ * We always clear the *other* storage to avoid stale tokens lingering.
+ */
+function storeToken(token, remember) {
+  try {
+    if (remember) {
+      localStorage.setItem(TOKEN_KEY, token);
+      sessionStorage.removeItem(TOKEN_KEY);
+    } else {
+      sessionStorage.setItem(TOKEN_KEY, token);
+      localStorage.removeItem(TOKEN_KEY);
+    }
+  } catch { /* storage may be disabled (private window, quota) */ }
+}
+
+/** Load a previously-stored token, preferring the long-lived one. */
+function loadStoredToken() {
+  try {
+    return localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY) || null;
+  } catch { return null; }
+}
+
+/** Erase the token from both storages. Called on explicit logout. */
+function clearStoredToken() {
+  try { localStorage.removeItem(TOKEN_KEY); } catch {}
+  try { sessionStorage.removeItem(TOKEN_KEY); } catch {}
+}
+
+/**
+ * Ask the server if a token is still valid. Resolves with true|false.
+ * Used on page boot to decide whether to skip the login screen.
+ */
+function verifyToken(token) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (ok) => { if (!settled) { settled = true; resolve(ok); } };
+    try {
+      const w = new WebSocket(wsBaseUrl() + "/verify");
+      w.onopen = () => w.send(JSON.stringify({ token }));
+      w.onmessage = (ev) => {
+        let d = null;
+        try { d = JSON.parse(ev.data); } catch {}
+        finish(!!(d && d.ok));
+        try { w.close(); } catch {}
+      };
+      w.onerror = () => finish(false);
+      w.onclose = () => finish(false);
+      // Hard timeout so a hung server doesn't strand us.
+      setTimeout(() => finish(false), 4000);
+    } catch {
+      finish(false);
+    }
+  });
+}
+
+/**
+ * Swap from the login view to the terminal view. Builds xterm, populates the
+ * settings drawer, opens the WebSocket. Idempotent guard avoids double-init.
+ */
+let terminalUiBuilt = false;
+async function enterTerminal(token) {
+  state.authToken = token;
+  els.login.style.display = "none";
+  els.terminal.classList.add("show");
+  if (!terminalUiBuilt) {
+    await buildTerminal();
+    buildThemeGrid();
+    buildFontSelect();
+    terminalUiBuilt = true;
+  }
+  connect();
+}
+
 function wireLogin() {
   els.loginForm.onsubmit = async (e) => {
     e.preventDefault();
@@ -964,16 +1040,8 @@ function wireLogin() {
         w.onerror = () => rej(new Error("Could not reach server"));
         w.onclose = (ev) => { if (ev.code === 1008) rej(new Error("Connection rejected by server")); };
       });
-      state.authToken = token;
-      if (els.rememberSession.checked) {
-        try { sessionStorage.setItem(TOKEN_KEY, token); } catch {}
-      }
-      els.login.style.display = "none";
-      els.terminal.classList.add("show");
-      await buildTerminal();
-      buildThemeGrid();
-      buildFontSelect();
-      connect();
+      storeToken(token, !!els.rememberSession.checked);
+      await enterTerminal(token);
     } catch (err) {
       els.loginError.textContent = err.message;
       btn.disabled = false;
@@ -1055,6 +1123,19 @@ async function boot() {
   wireRightClick();
   setupMobileBar();
   els.searchOpenBtn.onclick = openSearch;
+
+  // Try to skip the login screen if we have a still-valid token from a prior
+  // session (Remember-me checkbox -> localStorage, otherwise sessionStorage).
+  const stored = loadStoredToken();
+  if (stored) {
+    const ok = await verifyToken(stored);
+    if (ok) {
+      await enterTerminal(stored);
+      return;
+    }
+    // Stale or revoked; wipe it so we don't keep retrying every load.
+    clearStoredToken();
+  }
   els.passwordInput.focus();
 }
 

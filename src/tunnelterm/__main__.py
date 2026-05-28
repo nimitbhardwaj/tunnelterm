@@ -17,6 +17,7 @@ from tunnelterm.auth import (
     load_config,
     set_authenticator,
 )
+from tunnelterm.session import DEFAULT_IDLE_TIMEOUT_SECONDS
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 4200
@@ -59,6 +60,17 @@ def main() -> None:
         help=(
             "Allowed Origin header value for WebSocket handshake. "
             "Repeat to allow multiple. If unset, all origins accepted."
+        ),
+    )
+    parser.add_argument(
+        "--session-idle-timeout",
+        type=float,
+        default=None,
+        dest="session_idle_timeout",
+        help=(
+            "Seconds to keep a sticky PTY session alive after its last "
+            "WebSocket disconnect, before the reaper kills the shell. "
+            f"Default: {int(DEFAULT_IDLE_TIMEOUT_SECONDS)}s (5 hours)."
         ),
     )
     parser.add_argument(
@@ -126,7 +138,30 @@ def main() -> None:
         logger.error("authentication setup failed: %s", e)
         sys.exit(2)
 
-    logger.info("Starting tunnelterm on %s:%d (command=%r)", host, port, command)
+    # Idle timeout: CLI > env > config > default
+    idle_timeout = args.session_idle_timeout
+    if idle_timeout is None:
+        env_idle = os.environ.get("TUNNELTERM_SESSION_IDLE_TIMEOUT")
+        if env_idle is not None:
+            try:
+                idle_timeout = float(env_idle)
+            except ValueError:
+                logger.warning(
+                    "ignoring invalid TUNNELTERM_SESSION_IDLE_TIMEOUT=%r", env_idle
+                )
+    if idle_timeout is None:
+        cfg_idle = config.get("session_idle_timeout")
+        if isinstance(cfg_idle, (int, float)):
+            idle_timeout = float(cfg_idle)
+    if idle_timeout is None:
+        idle_timeout = float(DEFAULT_IDLE_TIMEOUT_SECONDS)
+    if idle_timeout < 0:
+        idle_timeout = float(DEFAULT_IDLE_TIMEOUT_SECONDS)
+
+    logger.info(
+        "Starting tunnelterm on %s:%d (command=%r, idle_timeout=%.0fs)",
+        host, port, command, idle_timeout,
+    )
     if allowed_origins:
         logger.info("Allowed origins: %s", ", ".join(allowed_origins))
     else:
@@ -140,6 +175,7 @@ def main() -> None:
         port=port,
         log_level=log_level_str.lower(),
         allowed_origins=allowed_origins,
+        idle_timeout=idle_timeout,
     )
 
 

@@ -40,6 +40,7 @@ Open `http://127.0.0.1:4200` and log in with the password.
 | `--password-env`    | Env var name to read the password from                         | `TUNNELTERM_PASSWORD`  |
 | `--config`          | Path to TOML config file                                       | `~/.config/tunnelterm/config.toml` |
 | `--allowed-origin`  | Allowed `Origin` header (repeat to allow multiple)             | accept all             |
+| `--session-idle-timeout` | Seconds to keep a sticky PTY alive after the WebSocket disconnects | `18000` (5h)       |
 | `--log-level`       | Log level: DEBUG, INFO, WARNING, ERROR                         | INFO                   |
 | `--version`         | Print version and exit                                         | —                      |
 
@@ -52,6 +53,7 @@ Open `http://127.0.0.1:4200` and log in with the password.
 | `TUNNELTERM_PORT`              | Bind port                              |
 | `TUNNELTERM_COMMAND`           | PTY command (if `--command` not given) |
 | `TUNNELTERM_ALLOWED_ORIGINS`   | Comma-separated `Origin` allow-list    |
+| `TUNNELTERM_SESSION_IDLE_TIMEOUT` | Idle timeout in seconds (see `--session-idle-timeout`) |
 | `LOG_LEVEL`                    | Log level fallback                     |
 
 ### Config file
@@ -112,6 +114,24 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now tunnelterm
 sudo journalctl -u tunnelterm -f
 ```
+
+## Session persistence
+
+tunnelterm keeps your shell alive between connections so a page refresh, a
+brief network drop, or closing and reopening a tab does *not* throw you back
+into a fresh shell.
+
+- Each auth token has one PTY bound to it on the server. Reconnecting with the
+  same token attaches you to the existing shell.
+- On reattach the server replays the last 1 MB of PTY output, so the screen
+  redraws to match what you were looking at.
+- "Remember me" on the login page stores the token in `localStorage`
+  (survives browser restart). Otherwise it goes to `sessionStorage` (this tab
+  only).
+- Sessions are reaped after `--session-idle-timeout` seconds of having no
+  client attached (default 5h). The PTY is SIGKILLed.
+- Explicit logout (settings drawer → Logout) revokes the token and kills the
+  PTY immediately.
 
 ## Security notes
 
