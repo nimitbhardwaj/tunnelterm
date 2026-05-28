@@ -1,136 +1,134 @@
-# Hermes Web Terminal
+# tunnelterm
 
-Web-based terminal interface with PTY support.
+A web-based terminal: spawn any shell command in a real PTY and interact with
+it from the browser over WebSocket.
 
-## Installation
+- Password-protected (per-IP rate limited)
+- Single-active-session per token
+- Origin allow-list for the WebSocket handshake
+- Token TTL + LRU eviction
+- Themes, fonts, search, web-links, WebGL renderer
+- Persistent preferences in the browser
 
-### Using uvx (no install required)
-
-```bash
-uvx hermes-web-terminal
-```
-
-### Using uv run
-
-```bash
-uv run hermes-web-terminal
-```
-
-### As an installed package
+## Install
 
 ```bash
-uv pip install hermes-web-terminal
-hermes-web-terminal
+uv tool install tunnelterm
+# or
+uv pip install tunnelterm
 ```
 
-## Usage
+## Run
 
-### Basic Usage
-
-Start the server with default settings (binds to `127.0.0.1:4200`):
+`--command` is required. Examples:
 
 ```bash
-uvx hermes-web-terminal
+TUNNELTERM_PASSWORD=hunter2 tunnelterm --command bash
+TUNNELTERM_PASSWORD=hunter2 tunnelterm --command "zsh -l"
+TUNNELTERM_PASSWORD=hunter2 tunnelterm --command htop --port 4242
 ```
 
-### Running Custom Commands
+Open `http://127.0.0.1:4200` and log in with the password.
 
-By default, `hermes-web-terminal` runs the `hermes` command. You can specify a different command:
+### CLI options
 
-```bash
-# Run bash instead of hermes
-uvx hermes-web-terminal --command bash
+| Option              | Description                                                    | Default                |
+| ------------------- | -------------------------------------------------------------- | ---------------------- |
+| `--command`         | Command to run in the PTY. **Required.**                       | —                      |
+| `--host`            | Host to bind to                                                | `127.0.0.1`            |
+| `--port`            | Port to bind to                                                | `4200`                 |
+| `--password-env`    | Env var name to read the password from                         | `TUNNELTERM_PASSWORD`  |
+| `--config`          | Path to TOML config file                                       | `~/.config/tunnelterm/config.toml` |
+| `--allowed-origin`  | Allowed `Origin` header (repeat to allow multiple)             | accept all             |
+| `--log-level`       | Log level: DEBUG, INFO, WARNING, ERROR                         | INFO                   |
+| `--version`         | Print version and exit                                         | —                      |
 
-# Run any other CLI tool
-uvx hermes-web-terminal --command htop
-uvx hermes-web-terminal --command "ls -la"
-```
+### Environment variables
 
-### Command Line Options
+| Variable                       | Description                            |
+| ------------------------------ | -------------------------------------- |
+| `TUNNELTERM_PASSWORD`          | Password for authentication (REQUIRED) |
+| `TUNNELTERM_HOST`              | Bind host                              |
+| `TUNNELTERM_PORT`              | Bind port                              |
+| `TUNNELTERM_COMMAND`           | PTY command (if `--command` not given) |
+| `TUNNELTERM_ALLOWED_ORIGINS`   | Comma-separated `Origin` allow-list    |
+| `LOG_LEVEL`                    | Log level fallback                     |
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--host` | Host to bind to | `127.0.0.1` |
-| `--port` | Port to bind to | `4200` |
-| `--command` | Command to run in the PTY | `hermes` |
-| `--password-env` | Env var name containing password | `HERMES_WEB_TERMINAL_PASSWORD` |
-| `--config` | Path to config TOML file | `~/.config/hermes-web-terminal/config.toml` |
-| `--version` | Show version and exit | - |
+### Config file
 
-### Accessing the Terminal
-
-1. Open your browser to `http://localhost:4200`
-2. Enter your password to authenticate
-3. Use the terminal as you would a regular PTY
-
-## Configuration
-
-### Config File
-
-Create `~/.config/hermes-web-terminal/config.toml`:
+`~/.config/tunnelterm/config.toml`:
 
 ```toml
-# Password for authentication (REQUIRED)
-password = "your_secure_password_here"
-
-# Optional: Override default host (default: 127.0.0.1)
+password = "hunter2"
+command = "bash"
 host = "127.0.0.1"
-
-# Optional: Override default port (default: 4200)
 port = 4200
-
-# Optional: Command to run in the PTY (default: hermes)
-command = "hermes"
+allowed_origins = ["https://terminal.example.com"]
 ```
 
-### Environment Variables
+`chmod 600` is recommended — tunnelterm logs a warning if the file is group-
+or world-readable.
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `HERMES_WEB_TERMINAL_PASSWORD` | Password for authentication | (none - must be set via config or env) |
+## Behind nginx with HTTPS
 
-**Note:** Environment variables take precedence over config file values.
+Plaintext `ws://` is fine for `127.0.0.1` only. For any other deployment,
+terminate TLS at a reverse proxy. Minimal nginx example:
 
-## Systemd Service
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name terminal.example.com;
 
-### Installation
+    ssl_certificate     /etc/letsencrypt/live/terminal.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/terminal.example.com/privkey.pem;
 
-1. Copy the service file:
-```bash
-sudo cp systemd/hermes-web-terminal.service /etc/systemd/system/
+    location / {
+        proxy_pass http://127.0.0.1:4200;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade           $http_upgrade;
+        proxy_set_header Connection        "upgrade";
+        proxy_read_timeout 1h;
+    }
+}
 ```
 
-2. Create the environment file:
-```bash
-sudo cp systemd/env.example /etc/hermes-web-terminal/env
-sudo chmod 600 /etc/hermes-web-terminal/env
-sudo nano /etc/hermes-web-terminal/env  # Set your password
-```
+Then run tunnelterm with `--allowed-origin https://terminal.example.com`.
 
-3. Customize the service file paths as needed (see Configuration section)
+## Systemd
 
-4. Reload and start:
 ```bash
+sudo cp systemd/tunnelterm.service /etc/systemd/system/
+# Edit User=, WorkingDirectory=, and ExecStart=.
+sudo mkdir -p /etc/tunnelterm
+sudo cp systemd/env.example /etc/tunnelterm/env
+sudo chmod 600 /etc/tunnelterm/env
+sudo $EDITOR /etc/tunnelterm/env  # set TUNNELTERM_PASSWORD
+
 sudo systemctl daemon-reload
-sudo systemctl enable hermes-web-terminal
-sudo systemctl start hermes-web-terminal
+sudo systemctl enable --now tunnelterm
+sudo journalctl -u tunnelterm -f
 ```
 
-### Configuration
+## Security notes
 
-The service file is configured with example paths. Update `/etc/systemd/system/hermes-web-terminal.service`:
+- Tokens are sent via `Sec-WebSocket-Protocol` (not the URL), so reverse-proxy
+  access logs do not capture them.
+- Each token may only be active in one WebSocket connection at a time.
+- Tokens expire after 24h by default; LRU-evicted at 64 outstanding.
+- Five failed auth attempts in 15min lock the source IP out for 5min.
+- Origin allow-list prevents cross-site WebSocket hijacking.
+- All HTTP responses ship CSP, X-Content-Type-Options, X-Frame-Options.
+- xterm assets are vendored locally; no third-party CDN trust.
 
-- `User`: Set to your deployment user
-- `WorkingDirectory`: Set appropriately
-- `ExecStart`: Update path if `uv` is installed somewhere else
-
-### Checking Status
+## Development
 
 ```bash
-sudo systemctl status hermes-web-terminal
-sudo journalctl -u hermes-web-terminal -f
+uv sync
+uv run pytest
+uv run ruff check
+uv run pyright
 ```
-
-### Restart Policy
-
-Configured with `Restart=always` and `RestartSec=5` for automatic recovery on failure.

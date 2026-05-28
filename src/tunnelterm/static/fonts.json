@@ -1,0 +1,21 @@
+{
+  "default": "JetBrains Mono",
+  "fonts": [
+    { "family": "JetBrains Mono",            "displayName": "JetBrains Mono" },
+    { "family": "JetBrainsMono Nerd Font",   "displayName": "JetBrains Mono (Nerd Font)" },
+    { "family": "Fira Code",                 "displayName": "Fira Code" },
+    { "family": "FiraCode Nerd Font",        "displayName": "Fira Code (Nerd Font)" },
+    { "family": "Hack",                      "displayName": "Hack" },
+    { "family": "Hack Nerd Font",            "displayName": "Hack (Nerd Font)" },
+    { "family": "Source Code Pro",           "displayName": "Source Code Pro" },
+    { "family": "IBM Plex Mono",             "displayName": "IBM Plex Mono" },
+    { "family": "Cascadia Code",             "displayName": "Cascadia Code" },
+    { "family": "Cascadia Mono",             "displayName": "Cascadia Mono" },
+    { "family": "Menlo",                     "displayName": "Menlo (macOS)" },
+    { "family": "SF Mono",                   "displayName": "SF Mono (macOS)" },
+    { "family": "Consolas",                  "displayName": "Consolas (Windows)" },
+    { "family": "Ubuntu Mono",               "displayName": "Ubuntu Mono" },
+    { "family": "DejaVu Sans Mono",          "displayName": "DejaVu Sans Mono" },
+    { "family": "ui-monospace, monospace",   "displayName": "System Mono" }
+  ]
+}

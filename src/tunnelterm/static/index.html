@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <title>tunnelterm</title>
+  <link rel="stylesheet" href="/static/vendor/xterm.css" integrity="sha384-8Xk9wy/gzEDUKrXtrmCFa2bBuK3BpjpDuL/p0SeKQX19Khl/M+lHOgD/CyYf7efP" crossorigin="anonymous">
+  <link rel="stylesheet" href="/static/css/app.css">
+  <script src="/static/vendor/xterm.js" integrity="sha384-M169f14mRZOXm3hD/v2Ti0ThIT/RnAQagXA9nlE15yHAtrW19gdePJh/HaTzUOe/" crossorigin="anonymous" defer></script>
+  <script src="/static/vendor/addon-fit.js" integrity="sha384-iF+jqbuti4XlB64clWgFWYEscb+UnSRv3VgVikGYZu+otNFnSHr7y7NcKfBnGizn" crossorigin="anonymous" defer></script>
+  <script src="/static/vendor/addon-web-links.js" integrity="sha384-Zb/L38m4THfRbsxxv8gWAi8cQ6xcWQnv0BgR0qwbTDwtBDaPi6pkyfgfBIH6C8ZG" crossorigin="anonymous" defer></script>
+  <script src="/static/vendor/addon-search.js" integrity="sha384-86LmRYuuZvNbzjJ7gcFKXZcXi8YHqiuLVAz9ichptrEx0IfWHcH7XRjQWA7K1Q5c" crossorigin="anonymous" defer></script>
+  <script src="/static/vendor/addon-webgl.js" integrity="sha384-AkzdQDeATxpW8V7I2EPcwg17qAoLQMjEFHb//1QaAAIyIlbDAHGKno5+huH7RKxq" crossorigin="anonymous" defer></script>
+  <script src="/static/vendor/addon-unicode11.js" integrity="sha384-7DkEj65mwuJpyTemyRshYB1TDCUcpXHiCcSt0agkXn8Zz8nOqajgB6EoeULHiS1O" crossorigin="anonymous" defer></script>
+  <script src="/static/vendor/addon-clipboard.js" integrity="sha384-u4EBOaE07GHmKsUXC4q1Q+tB3DztCkgpT0AzFavi1gCO/qQryHvcVVI05jk/B8hG" crossorigin="anonymous" defer></script>
+  <script src="/static/vendor/addon-serialize.js" integrity="sha384-LE8irhnMZbxP5bqJs4QETh0R1y0V6akb5+9Vwi5qb1dQoz7Ii3JfguJSHMDb+62a" crossorigin="anonymous" defer></script>
+  <script src="/static/js/app.js" defer></script>
+</head>
+<body>
+
+<!-- ====================================================================== -->
+<!-- Login                                                                  -->
+<!-- ====================================================================== -->
+<main id="login">
+  <div class="login-card">
+    <h1>tunnelterm</h1>
+    <p class="subtitle">Enter your password to access the terminal</p>
+    <form id="login-form" autocomplete="off">
+      <div class="input-row">
+        <label for="password" class="sr-only">Password</label>
+        <input
+          type="password"
+          id="password"
+          placeholder="Password"
+          autocomplete="current-password"
+          autocapitalize="off"
+          autocorrect="off"
+          spellcheck="false"
+          required
+        >
+        <button type="button" id="show-pw" class="show-pw" title="Show password" aria-pressed="false" aria-label="Toggle password visibility">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+            <circle cx="12" cy="12" r="3"/>
+          </svg>
+        </button>
+      </div>
+      <label class="checkbox-row">
+        <input type="checkbox" id="remember-session">
+        Remember me for this session
+      </label>
+      <button type="submit" class="primary">
+        <span class="spinner" aria-hidden="true"></span>
+        <span class="label">Connect</span>
+      </button>
+      <div id="login-error" role="alert" aria-live="assertive"></div>
+    </form>
+  </div>
+</main>
+
+<!-- ====================================================================== -->
+<!-- Terminal                                                               -->
+<!-- ====================================================================== -->
+<section id="terminal" aria-label="Terminal session">
+
+  <!-- Status bar -->
+  <div id="status-bar">
+    <div class="status-group">
+      <span class="dot" id="status-dot" aria-hidden="true"></span>
+      <span id="status-text" aria-live="polite">Connecting…</span>
+    </div>
+    <span class="status-divider hide-mobile">·</span>
+    <span class="status-meta hide-mobile" title="Latency">⇄ <span id="status-latency">—</span></span>
+    <span class="status-divider hide-mobile">·</span>
+    <span class="status-meta hide-mobile" title="Session duration"><span id="status-timer">00:00:00</span></span>
+
+    <div class="status-actions">
+      <button type="button" id="search-open-btn" class="icon-btn" title="Search (Ctrl+Shift+F)" aria-label="Search terminal">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      </button>
+      <button type="button" id="shortcuts-btn" class="icon-btn" title="Keyboard shortcuts" aria-label="Keyboard shortcuts">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h12"/></svg>
+      </button>
+      <button type="button" id="settings-btn" class="icon-btn" title="Settings" aria-label="Settings" aria-expanded="false" aria-controls="settings-drawer">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- Terminal viewport -->
+  <div id="term">
+    <!-- Search bar overlay -->
+    <div id="search-bar" role="search">
+      <label for="search-input" class="sr-only">Find in terminal</label>
+      <input id="search-input" type="text" placeholder="Find…" autocomplete="off" spellcheck="false">
+      <button type="button" id="search-prev" class="icon-btn" title="Previous (Shift+Enter)" aria-label="Previous match">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="m18 15-6-6-6 6"/></svg>
+      </button>
+      <button type="button" id="search-next" class="icon-btn" title="Next (Enter)" aria-label="Next match">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
+      </button>
+      <button type="button" id="search-close" class="icon-btn" title="Close (Esc)" aria-label="Close search">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- Mobile virtual key bar -->
+  <div id="mobile-bar" role="toolbar" aria-label="Special keys"></div>
+</section>
+
+<!-- ====================================================================== -->
+<!-- Settings drawer                                                        -->
+<!-- ====================================================================== -->
+<div id="drawer-scrim" class="drawer-scrim" aria-hidden="true"></div>
+<aside id="settings-drawer" role="dialog" aria-labelledby="drawer-title" aria-modal="true">
+  <header class="drawer-header">
+    <h2 id="drawer-title">Settings</h2>
+    <button type="button" id="drawer-close" class="icon-btn" aria-label="Close settings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+    </button>
+  </header>
+  <div class="drawer-body">
+
+    <section class="setting-section">
+      <h3>Theme</h3>
+      <div id="theme-grid" class="theme-grid" role="radiogroup" aria-label="Theme selection"></div>
+    </section>
+
+    <section class="setting-section">
+      <h3>Typography</h3>
+      <div class="setting-row">
+        <label for="font-select">Font</label>
+        <select id="font-select"></select>
+      </div>
+      <div class="setting-row vertical">
+        <div style="display:flex;justify-content:space-between;">
+          <label for="font-size-slider">Size</label>
+          <span class="value" id="font-size-value">14px</span>
+        </div>
+        <input id="font-size-slider" type="range" min="8" max="32" step="1">
+      </div>
+      <div class="setting-row">
+        <label>Weight</label>
+        <div class="segmented" role="group" aria-label="Font weight">
+          <button type="button" data-weight="normal" aria-pressed="false">Normal</button>
+          <button type="button" data-weight="bold" aria-pressed="false">Bold</button>
+        </div>
+      </div>
+      <div class="setting-row vertical">
+        <div style="display:flex;justify-content:space-between;">
+          <label for="letter-spacing">Letter spacing</label>
+          <span class="value" id="letter-spacing-value">0px</span>
+        </div>
+        <input id="letter-spacing" type="range" min="-1" max="3" step="0.5">
+      </div>
+      <div class="setting-row vertical">
+        <div style="display:flex;justify-content:space-between;">
+          <label for="line-height">Line height</label>
+          <span class="value" id="line-height-value">1.20</span>
+        </div>
+        <input id="line-height" type="range" min="1.0" max="2.0" step="0.05">
+      </div>
+    </section>
+
+    <section class="setting-section">
+      <h3>Cursor</h3>
+      <div class="setting-row">
+        <label>Style</label>
+        <div class="segmented" role="group" aria-label="Cursor style">
+          <button type="button" data-cursor="block" aria-pressed="false">Block</button>
+          <button type="button" data-cursor="underline" aria-pressed="false">Underline</button>
+          <button type="button" data-cursor="bar" aria-pressed="false">Bar</button>
+        </div>
+      </div>
+      <div class="setting-row">
+        <label for="cursor-blink">Blink</label>
+        <label class="toggle"><input id="cursor-blink" type="checkbox"><span class="slider"></span></label>
+      </div>
+    </section>
+
+    <section class="setting-section">
+      <h3>Behavior</h3>
+      <div class="setting-row">
+        <label for="scrollback">Scrollback (lines)</label>
+        <select id="scrollback">
+          <option value="1000">1,000</option>
+          <option value="5000">5,000</option>
+          <option value="10000">10,000</option>
+          <option value="50000">50,000</option>
+        </select>
+      </div>
+      <div class="setting-row">
+        <label>Bell</label>
+        <div class="segmented" role="group" aria-label="Bell mode">
+          <button type="button" data-bell="none" aria-pressed="false">Off</button>
+          <button type="button" data-bell="sound" aria-pressed="false">Sound</button>
+          <button type="button" data-bell="visual" aria-pressed="false">Visual</button>
+        </div>
+      </div>
+      <div class="setting-row">
+        <label for="copy-on-select">Copy on selection</label>
+        <label class="toggle"><input id="copy-on-select" type="checkbox"><span class="slider"></span></label>
+      </div>
+      <div class="setting-row">
+        <label for="mac-option-as-meta">macOS: Option as Meta</label>
+        <label class="toggle"><input id="mac-option-as-meta" type="checkbox"><span class="slider"></span></label>
+      </div>
+      <div class="setting-row">
+        <label for="screen-reader-mode">Screen reader mode</label>
+        <label class="toggle"><input id="screen-reader-mode" type="checkbox"><span class="slider"></span></label>
+      </div>
+    </section>
+
+    <section class="setting-section">
+      <h3>Session</h3>
+      <div class="action-row">
+        <button type="button" id="clear-btn"     class="secondary">Clear terminal</button>
+        <button type="button" id="download-btn"  class="secondary">Download log</button>
+        <button type="button" id="logout-btn"    class="secondary danger">Logout</button>
+        <button type="button" id="reset-btn"     class="secondary danger">Reset preferences</button>
+      </div>
+    </section>
+
+  </div>
+</aside>
+
+<!-- ====================================================================== -->
+<!-- Shortcuts modal                                                        -->
+<!-- ====================================================================== -->
+<div id="shortcuts-modal" class="modal-scrim" role="dialog" aria-labelledby="shortcuts-title" aria-modal="true">
+  <div class="modal">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+      <h2 id="shortcuts-title">Keyboard shortcuts</h2>
+      <button type="button" id="shortcuts-close" class="icon-btn" aria-label="Close">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="kbd-list">
+      <span><kbd>Ctrl/⌘</kbd> + <kbd>Shift</kbd> + <kbd>F</kbd></span><span>Search</span>
+      <span><kbd>Ctrl/⌘</kbd> + <kbd>Shift</kbd> + <kbd>C</kbd></span><span>Copy selection</span>
+      <span><kbd>Ctrl/⌘</kbd> + <kbd>Shift</kbd> + <kbd>V</kbd></span><span>Paste</span>
+      <span><kbd>Ctrl/⌘</kbd> + <kbd>+</kbd> / <kbd>-</kbd> / <kbd>0</kbd></span><span>Zoom in / out / reset</span>
+      <span><kbd>Shift</kbd> + <kbd>Enter</kbd></span><span>Send newline (no submit)</span>
+      <span><kbd>Esc</kbd></span><span>Close search / drawer</span>
+      <span><kbd>Ctrl/⌘</kbd> + <kbd>?</kbd></span><span>Show this list</span>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

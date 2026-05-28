@@ -1,0 +1,27 @@
+[Unit]
+Description=tunnelterm - Web-based terminal with PTY support
+After=network.target
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=5
+
+# REQUIRED: customize these for your deployment.
+User=CHANGEME
+WorkingDirectory=/home/CHANGEME
+
+# Environment file containing TUNNELTERM_PASSWORD and optional overrides.
+EnvironmentFile=/etc/tunnelterm/env
+
+# Run via uv. Adjust the path to uv if it lives elsewhere.
+# --command is required.
+ExecStart=/home/CHANGEME/.local/bin/uv run --package tunnelterm tunnelterm --command bash
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tunnelterm
+
+[Install]
+WantedBy=multi-user.target
