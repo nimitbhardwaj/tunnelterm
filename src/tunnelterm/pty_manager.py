@@ -73,6 +73,13 @@ class PtyManager:
         if pid == 0:
             # Child branch.
             os.close(err_r)
+            # Many programs (ls --color, top, htop, delta, etc.) check $TERM to
+            # decide whether to emit ANSI colour escape sequences.  A bare PTY
+            # slave has no TERM set by default.  xterm-256color is the most
+            # widely-supported terminal description and works in essentially all
+            # modern terminal emulators and TUI libraries (blessed, ncurses,
+            # Textual, etc.).
+            os.putenv("TERM", "xterm-256color")
             try:
                 os.setsid()
             except OSError:
