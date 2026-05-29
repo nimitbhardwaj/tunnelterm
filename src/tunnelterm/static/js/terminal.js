@@ -76,6 +76,12 @@ export async function buildTerminal({ onFontSizeNudge }) {
     bellStyle: state.prefs.bell === "sound" ? "sound" : "none",
     theme: theme ? theme.colors : undefined,
     allowProposedApi: true,
+    // Enable the Kitty keyboard protocol. xterm then negotiates it with the
+    // foreground app (responds to CSI-u queries, tracks per-screen flag
+    // stacks) and encodes keys accordingly -- e.g. Shift+Enter becomes
+    // ESC[13;2u so Claude Code / neovim / ink TUIs see a real Shift+Enter
+    // instead of a plain submit. No manual key handling required.
+    vtExtensions: { kittyKeyboard: true },
   });
 
   state.fitAddon = new FitAddon.FitAddon();
@@ -181,10 +187,6 @@ export async function buildTerminal({ onFontSizeNudge }) {
     }
     if ((e.ctrlKey || e.metaKey) && e.key === "0") {
       onFontSizeNudge(14);
-      return false;
-    }
-    if (e.key === "Enter" && e.shiftKey) {
-      state.ws?.readyState === 1 && state.ws.send("\n");
       return false;
     }
     if (e.key === "Escape" && state.searchOpen) {
