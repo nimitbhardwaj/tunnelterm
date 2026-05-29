@@ -51,28 +51,31 @@ def _origin_check_ok(request: Request) -> bool:
     if allow_any:
         return True
     origin = request.headers.get("origin") or request.headers.get("referer")
-    if origin and origin.endswith("/"):
-        origin = origin[:-1]
     return origin_allowed(origin, allowed)
 
 
 def _client_ip(request: Request) -> str:
-    """Resolve the request's client IP, honoring a single ``X-Forwarded-For`` hop."""
-    fwd = request.headers.get("x-forwarded-for", "")
-    if fwd:
-        # take the first (left-most) entry; reverse proxies append on the right.
-        return fwd.split(",", 1)[0].strip() or "unknown"
-    return request.client.host if request.client else "unknown"
+    """Return the real client IP, honouring XFF only from a trusted proxy."""
+    xff = request.headers.get("X-Forwarded-For")
+    return request.app.state.trusted_proxies.client_ip(
+        request.client.host if request.client else "",
+        xff,
+    )
 
 
 def _cookie_secure(request: Request) -> bool:
     """Return True if we should set ``Secure`` on outgoing cookies.
 
-    We err on the side of "yes" whenever the connection looks like real HTTPS
-    or the deployment is exposed to a non-loopback interface.
+    When behind a trusted reverse proxy that sends ``X-Forwarded-Proto``,
+    honour it so that ``Secure`` is set correctly even when the app listens
+    on plain HTTP (e.g. loopback). If no header is available, fall back to the
+    explicit ``cookie_secure`` flag.
     """
-    cookie_secure: bool = bool(getattr(request.app.state, "cookie_secure", False))
-    return cookie_secure
+    explicit: bool = bool(getattr(request.app.state, "cookie_secure", False))
+    peer = request.client.host if request.client else ""
+    xfp = request.headers.get("X-Forwarded-Proto")
+    trusted = request.app.state.trusted_proxies
+    return trusted.forwarded_scheme(peer, xfp, "http") == "https" or explicit
 
 
 @router.post("/auth")

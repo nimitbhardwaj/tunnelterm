@@ -38,11 +38,12 @@ def _check_origin(ws: WebSocket) -> bool:
 
 
 def _client_ip(ws: WebSocket) -> str:
-    """Resolve the WebSocket peer's IP."""
-    fwd = ws.headers.get("x-forwarded-for", "")
-    if fwd:
-        return fwd.split(",", 1)[0].strip() or "unknown"
-    return ws.client.host if ws.client else "unknown"
+    """Return the real client IP, honouring XFF only from a trusted proxy."""
+    xff = ws.headers.get("X-Forwarded-For")
+    return ws.app.state.trusted_proxies.client_ip(
+        ws.client.host if ws.client else "",
+        xff,
+    )
 
 
 @router.websocket("/ws")

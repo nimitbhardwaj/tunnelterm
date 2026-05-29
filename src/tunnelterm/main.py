@@ -21,6 +21,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
+from tunnelterm.auth import TrustedProxies
 from tunnelterm.middleware import SecurityHeadersMiddleware
 from tunnelterm.routes.auth_routes import router as auth_router
 from tunnelterm.routes.http_routes import router as http_router
@@ -43,6 +44,7 @@ def create_app(
     cookie_secure: bool = False,
     allow_any_origin: bool = False,
     enable_hsts: bool = False,
+    trusted_proxy_cidrs: list[str] | None = None,
 ) -> FastAPI:
     """Build the FastAPI app with the given runtime config.
 
@@ -53,9 +55,14 @@ def create_app(
         cookie_secure: Whether to set ``Secure`` on session cookies (HTTPS-only).
         allow_any_origin: Explicit escape hatch to disable the Origin allow-list.
         enable_hsts: Add ``Strict-Transport-Security`` (HTTPS deployments only).
+        trusted_proxy_cidrs: Peer IPs (CIDR notation) whose ``X-Forwarded-For``
+            / ``X-Forwarded-Proto`` headers we trust. Defaults to loopback
+            only. Set to e.g. ``["127.0.0.0/8", "10.0.0.0/8"]`` for a
+            reverse proxy on a private network.
 
     """
     registry = SessionRegistry(command=command, idle_timeout=idle_timeout)
+    trusted = TrustedProxies(trusted_proxy_cidrs or ["127.0.0.0/8", "::1/128"])
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -79,6 +86,7 @@ def create_app(
     app.state.registry = registry
     app.state.cookie_secure = cookie_secure
     app.state.allow_any_origin = allow_any_origin
+    app.state.trusted_proxies = trusted
 
     app.add_middleware(SecurityHeadersMiddleware, enable_hsts=enable_hsts)
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -107,6 +115,7 @@ def run(
     cookie_secure: bool = False,
     allow_any_origin: bool = False,
     enable_hsts: bool = False,
+    trusted_proxy_cidrs: list[str] | None = None,
 ) -> None:
     """Build the app and run uvicorn (blocking)."""
     import uvicorn
@@ -118,5 +127,6 @@ def run(
         cookie_secure=cookie_secure,
         allow_any_origin=allow_any_origin,
         enable_hsts=enable_hsts,
+        trusted_proxy_cidrs=trusted_proxy_cidrs,
     )
     uvicorn.run(application, host=host, port=port, log_level=log_level, access_log=False)

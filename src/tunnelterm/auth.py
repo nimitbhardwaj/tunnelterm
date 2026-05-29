@@ -13,6 +13,7 @@ failures.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import logging
 import os
 import secrets
@@ -40,9 +41,16 @@ RATE_LIMIT_LOCKOUT_SECONDS = 5 * 60  # lockout duration
 
 # Rate-limit defaults for /verify (token-existence probe). The token is
 # 256-bit unguessable, so this is a CPU/abuse limit rather than a brute-force
-# defense. We tolerate many more hits per minute here than on /auth.
+# defense. We tolerate many more hits per minute here than on /auth -- the
+# auto-login flow + reconnects can legitimately produce dozens of hits per
+# page-visit, and behind a reverse proxy without trusted-proxy config, every
+# user looks like a single IP, so this cap is shared.
 VERIFY_RATE_WINDOW_SECONDS = 60.0
-VERIFY_RATE_MAX_HITS = 60  # per IP per minute
+VERIFY_RATE_MAX_HITS = 300  # per IP per minute
+
+# Loopback CIDRs are trusted to forward client metadata (X-Forwarded-For /
+# X-Forwarded-Proto). Any other peer's headers are ignored.
+_DEFAULT_TRUSTED_PROXY_CIDRS = ("127.0.0.0/8", "::1/128")
 
 
 class AuthenticationError(Exception):
@@ -259,6 +267,81 @@ class Authenticator:
 # ---------- helpers ----------
 
 
+class TrustedProxies:
+    """Match peer IPs against a list of CIDRs.
+
+    Used to decide whether ``X-Forwarded-For`` / ``X-Forwarded-Proto`` headers
+    on an incoming request should be honored. Trusting them from arbitrary
+    clients lets attackers spoof their source IP and bypass per-IP rate
+    limits.
+    """
+
+    def __init__(self, cidrs: Iterable[str] | None = None) -> None:
+        """Build the matcher. Invalid CIDRs are dropped with a warning."""
+        self._networks: list[ipaddress._BaseNetwork] = []
+        cidrs = cidrs or _DEFAULT_TRUSTED_PROXY_CIDRS
+        for c in cidrs:
+            c = (c or "").strip()
+            if not c:
+                continue
+            try:
+                self._networks.append(ipaddress.ip_network(c, strict=False))
+            except ValueError:
+                logger.warning("Ignoring invalid trusted-proxy CIDR %r", c)
+
+    def trusts(self, peer_ip: str) -> bool:
+        """Return True if ``peer_ip`` is inside any configured CIDR."""
+        if not peer_ip:
+            return False
+        try:
+            addr = ipaddress.ip_address(peer_ip)
+        except ValueError:
+            return False
+        return any(addr in net for net in self._networks)
+
+    def client_ip(self, peer_ip: str, xff_header: str | None) -> str:
+        """Resolve the real client IP, trusting XFF only from a trusted peer.
+
+        ``X-Forwarded-For`` is a comma-separated chain; the **left-most**
+        entry is the original client. Anything to its right is an
+        intermediate proxy that prepended its own peer. We walk the chain
+        right-to-left, accepting hops while each previous hop is trusted,
+        and stop at the first untrusted hop -- treating it as the real
+        client. This prevents spoofing via injected XFF entries.
+        """
+        if not self.trusts(peer_ip):
+            # Peer is not a trusted proxy -> ignore the header entirely.
+            return peer_ip or "unknown"
+        if not xff_header:
+            return peer_ip or "unknown"
+        hops = [h.strip() for h in xff_header.split(",") if h.strip()]
+        if not hops:
+            return peer_ip or "unknown"
+        # Walk right-to-left: the right-most entry was added by our peer.
+        # Skip trusted hops; the first untrusted hop is the client.
+        for hop in reversed(hops):
+            if not self.trusts(hop):
+                return hop
+        # All hops trusted (e.g. CDN chain entirely within our network) -->
+        # use the left-most entry as the originator.
+        return hops[0]
+
+    def forwarded_scheme(
+        self,
+        peer_ip: str,
+        xfp_header: str | None,
+        default_scheme: str,
+    ) -> str:
+        """Return the request scheme, honoring ``X-Forwarded-Proto`` from trust."""
+        if not self.trusts(peer_ip) or not xfp_header:
+            return default_scheme
+        # XFP can be comma-separated like XFF; the left-most is the original.
+        first = xfp_header.split(",", 1)[0].strip().lower()
+        if first in ("http", "https"):
+            return first
+        return default_scheme
+
+
 def token_fingerprint(token: str) -> str:
     """Return a stable, non-reversible 8-char tag for ``token`` (for logs).
 
@@ -337,16 +420,51 @@ def get_authenticator() -> Authenticator:
     return _INSTANCE
 
 
+def _normalize_origin(value: str) -> str:
+    """Canonicalize an origin string for comparison.
+
+    Browsers send ``Origin`` without a path, but operators frequently configure
+    the allow-list with a trailing slash, mixed case, or a default port. We
+    normalize both sides so common typos don't cause mysterious 403s:
+
+    * lowercase scheme and host
+    * strip trailing slash
+    * strip default ports (``:443`` for ``https``, ``:80`` for ``http``)
+    """
+    from urllib.parse import urlparse
+
+    s = value.strip()
+    if not s:
+        return ""
+    # If someone wrote just ``example.com``, treat it as bare host.
+    if "://" not in s:
+        return s.lower().rstrip("/")
+    parsed = urlparse(s)
+    scheme = (parsed.scheme or "").lower()
+    host = (parsed.hostname or "").lower()
+    port = parsed.port
+    if not host:
+        return s.lower().rstrip("/")
+    if (scheme == "https" and port == 443) or (scheme == "http" and port == 80):
+        port = None
+    netloc = host if port is None else f"{host}:{port}"
+    return f"{scheme}://{netloc}"
+
+
 def origin_allowed(origin: str | None, allowed: Iterable[str]) -> bool:
     """Return True if ``origin`` is in the allow-list, or if the list is empty.
 
     A None or empty origin (non-browser client) is allowed only when the
     allow-list itself is empty (default-permissive for local CLI usage).
+
+    Both sides are normalized (case, default port, trailing slash) before
+    comparison so e.g. ``https://Example.COM/`` and ``https://example.com``
+    match.
     """
-    allowed_set = {o.strip() for o in allowed if o.strip()}
+    allowed_set = {_normalize_origin(o) for o in allowed if o.strip()}
     if not allowed_set:
         # No allow-list configured: permit (caller bound to localhost typically).
         return True
     if not origin:
         return False
-    return origin in allowed_set
+    return _normalize_origin(origin) in allowed_set

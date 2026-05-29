@@ -266,9 +266,9 @@ async def test_verify_rate_limits_excessive_hits() -> None:
     proc = _start_server(port)
     try:
         async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
-            # Default cap is 60/min; fire 80 in a tight loop.
+            # Default cap is 300/min; fire 320 in a tight loop.
             statuses = []
-            for _ in range(80):
+            for _ in range(320):
                 r = await client.post("/api/verify")
                 statuses.append(r.status_code)
         assert 429 in statuses, f"verify rate-limit never tripped: {statuses[-10:]}"

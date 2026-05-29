@@ -109,6 +109,18 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--trusted-proxy-cidrs",
+        action="append",
+        dest="trusted_proxy_cidrs",
+        default=None,
+        help=(
+            "CIDR (e.g. 127.0.0.0/8) of trusted reverse proxies. "
+            "X-Forwarded-For / X-Forwarded-Proto headers from non-trusted peers "
+            "are ignored. Repeat to allow multiple networks. "
+            "Default: 127.0.0.0/8 ::1/128 (loopback only)."
+        ),
+    )
+    parser.add_argument(
         "--log-level",
         dest="log_level",
         default=None,
@@ -192,6 +204,18 @@ def main() -> None:
 
     enable_hsts = bool(args.enable_hsts) or bool(config.get("enable_hsts", False))
 
+    # Trusted-proxy CIDRs: CLI > env > config, all merged.
+    trusted_raw: list[str] = []
+    if args.trusted_proxy_cidrs:
+        trusted_raw.extend(args.trusted_proxy_cidrs)
+    env_trusted = os.environ.get("TUNNELTERM_TRUSTED_PROXY_CIDRS")
+    if env_trusted:
+        trusted_raw.extend(t.strip() for t in env_trusted.split(","))
+    cfg_trusted = config.get("trusted_proxy_cidrs")
+    if isinstance(cfg_trusted, list):
+        trusted_raw.extend(cfg_trusted)
+    trusted_proxy_cidrs = [t for t in trusted_raw if t] or None
+
     # Instantiate the singleton authenticator (fail-fast).
     try:
         set_authenticator(Authenticator(password=password))
@@ -251,6 +275,7 @@ def main() -> None:
         cookie_secure=cookie_secure,
         allow_any_origin=allow_any_origin,
         enable_hsts=enable_hsts,
+        trusted_proxy_cidrs=trusted_proxy_cidrs,
     )
 
 
