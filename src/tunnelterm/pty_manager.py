@@ -80,6 +80,17 @@ class PtyManager:
             # modern terminal emulators and TUI libraries (blessed, ncurses,
             # Textual, etc.).
             os.putenv("TERM", "xterm-256color")
+            # Advertise an xterm.js-based terminal so TUIs that gate the Kitty
+            # keyboard protocol behind a terminal allow-list will actually push
+            # it (e.g. Hermes' supportsExtendedKeys()). The frontend really is
+            # xterm.js -- the same engine VS Code's integrated terminal uses --
+            # and we enable vtExtensions.kittyKeyboard there, so the "vscode"
+            # default is accurate, not a spoof. Without this, such apps never
+            # enable extended keys and Shift+Enter collapses to a plain Enter.
+            # Operators can override (or clear) via TUNNELTERM_TERM_PROGRAM.
+            term_program = os.environ.get("TUNNELTERM_TERM_PROGRAM", "vscode")
+            if term_program:
+                os.putenv("TERM_PROGRAM", term_program)
             try:
                 os.setsid()
             except OSError:
