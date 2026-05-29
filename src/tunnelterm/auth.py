@@ -12,6 +12,7 @@ failures.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import secrets
@@ -32,10 +33,16 @@ ENV_PASSWORD_VAR = "TUNNELTERM_PASSWORD"
 DEFAULT_TOKEN_TTL_SECONDS = 24 * 60 * 60  # 24h
 DEFAULT_MAX_TOKENS = 64
 
-# Rate-limit defaults
+# Rate-limit defaults for /auth (password attempts)
 RATE_LIMIT_WINDOW_SECONDS = 15 * 60  # 15min sliding window
 RATE_LIMIT_MAX_FAILURES = 5  # after this many failures in the window, lock out
 RATE_LIMIT_LOCKOUT_SECONDS = 5 * 60  # lockout duration
+
+# Rate-limit defaults for /verify (token-existence probe). The token is
+# 256-bit unguessable, so this is a CPU/abuse limit rather than a brute-force
+# defense. We tolerate many more hits per minute here than on /auth.
+VERIFY_RATE_WINDOW_SECONDS = 60.0
+VERIFY_RATE_MAX_HITS = 60  # per IP per minute
 
 
 class AuthenticationError(Exception):
@@ -105,6 +112,13 @@ class Authenticator:
         self._failures: dict[str, list[float]] = {}
         # ip -> monotonic-time after which they may try again (lockout end)
         self._lockouts: dict[str, float] = {}
+        # ip -> list of /verify hit times within the sliding window
+        self._verify_hits: dict[str, list[float]] = {}
+
+    @property
+    def token_ttl(self) -> float:
+        """Token lifetime, in seconds (read-only)."""
+        return self._token_ttl
 
     # ---------- password loading ----------
 
@@ -222,8 +236,62 @@ class Authenticator:
         self._failures.pop(ip, None)
         self._lockouts.pop(ip, None)
 
+    # ---------- /verify rate limit ----------
+
+    def check_verify_rate(self, ip: str) -> bool:
+        """Record a /verify hit from ``ip``; return False if the IP is over the cap.
+
+        Uses a per-IP sliding-window counter independent of the password-attempt
+        limiter, with a much higher threshold (60/min by default). A False return
+        means the caller should reject the request without doing any token work.
+        """
+        now = time.monotonic()
+        window_start = now - VERIFY_RATE_WINDOW_SECONDS
+        hits = [t for t in self._verify_hits.get(ip, []) if t >= window_start]
+        if len(hits) >= VERIFY_RATE_MAX_HITS:
+            self._verify_hits[ip] = hits  # keep the trimmed list
+            return False
+        hits.append(now)
+        self._verify_hits[ip] = hits
+        return True
+
 
 # ---------- helpers ----------
+
+
+def token_fingerprint(token: str) -> str:
+    """Return a stable, non-reversible 8-char tag for ``token`` (for logs).
+
+    Logging raw token prefixes leaks bits of the secret. We log a SHA-256
+    fingerprint instead so log aggregators don't accumulate partial tokens.
+    """
+    if not token:
+        return "<empty>"
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    return digest[:8]
+
+
+# IPv4/IPv6 loopback prefixes treated as "safe to bind to without an
+# origin allow-list" by :func:`is_loopback_host`.
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "0.0.0.0", "::"})
+
+
+def is_loopback_host(host: str) -> bool:
+    """Return True if ``host`` is loopback-only (no external interface).
+
+    The wildcard binds (``0.0.0.0`` / ``::``) are NOT loopback, but we resolve
+    them in :func:`origin_enforcement_required` separately because the user
+    may have legitimate reasons (containers, dev servers) to bind wildcard
+    on a private network.
+    """
+    if not host:
+        return False
+    host = host.strip().lower()
+    if host in ("127.0.0.1", "::1", "localhost"):
+        return True
+    if host.startswith("127."):
+        return True
+    return False
 
 
 def _warn_if_world_readable(path: Path) -> None:

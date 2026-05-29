@@ -1,0 +1,162 @@
+"""HTTP auth endpoints: /api/auth, /api/verify, /api/logout.
+
+All three are plain ``POST``s that read/write the session cookie:
+
+* ``/api/auth``   — verify password, mint a token, ``Set-Cookie`` it.
+* ``/api/verify`` — check whether the cookie is still valid (no body needed).
+* ``/api/logout`` — revoke the cookie's token and discard the sticky session.
+
+The cookie is ``HttpOnly; Secure; SameSite=Strict`` so JavaScript cannot read
+it (XSS-safe) and browsers won't send it on cross-site requests (CSRF-safe).
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import TYPE_CHECKING
+
+from fastapi import APIRouter, Body, Request
+from fastapi.responses import JSONResponse
+
+from tunnelterm.auth import (
+    RateLimitedError,
+    get_authenticator,
+    origin_allowed,
+    token_fingerprint,
+)
+from tunnelterm.cookies import (
+    clear_session_cookie,
+    read_session_cookie,
+    set_session_cookie,
+)
+
+if TYPE_CHECKING:
+    from tunnelterm.session import SessionRegistry
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/api")
+
+
+def _origin_check_ok(request: Request) -> bool:
+    """Reject cross-site POSTs based on the configured allow-list.
+
+    SameSite=Strict already blocks third-party form submits and XHRs from
+    setting the cookie, but the request itself can still arrive (e.g.
+    fetched without credentials). We additionally validate ``Origin`` /
+    ``Referer`` to keep error responses from leaking.
+    """
+    allowed: list[str] = list(getattr(request.app.state, "allowed_origins", []) or [])
+    allow_any: bool = bool(getattr(request.app.state, "allow_any_origin", False))
+    if allow_any:
+        return True
+    origin = request.headers.get("origin") or request.headers.get("referer")
+    if origin and origin.endswith("/"):
+        origin = origin[:-1]
+    return origin_allowed(origin, allowed)
+
+
+def _client_ip(request: Request) -> str:
+    """Resolve the request's client IP, honoring a single ``X-Forwarded-For`` hop."""
+    fwd = request.headers.get("x-forwarded-for", "")
+    if fwd:
+        # take the first (left-most) entry; reverse proxies append on the right.
+        return fwd.split(",", 1)[0].strip() or "unknown"
+    return request.client.host if request.client else "unknown"
+
+
+def _cookie_secure(request: Request) -> bool:
+    """Return True if we should set ``Secure`` on outgoing cookies.
+
+    We err on the side of "yes" whenever the connection looks like real HTTPS
+    or the deployment is exposed to a non-loopback interface.
+    """
+    cookie_secure: bool = bool(getattr(request.app.state, "cookie_secure", False))
+    return cookie_secure
+
+
+@router.post("/auth")
+async def auth(
+    request: Request,
+    payload: dict = Body(...),
+) -> JSONResponse:
+    """Verify password, mint a token, attach session cookie."""
+    if not _origin_check_ok(request):
+        logger.warning("Rejecting /api/auth from disallowed origin %r",
+                       request.headers.get("origin"))
+        return JSONResponse({"error": "origin_not_allowed"}, status_code=403)
+
+    auth_obj = get_authenticator()
+    ip = _client_ip(request)
+    try:
+        auth_obj.check_rate_limit(ip)
+    except RateLimitedError as e:
+        return JSONResponse(
+            {"error": "rate_limited", "retry_after": int(e.retry_after)},
+            status_code=429,
+        )
+
+    password = ""
+    if isinstance(payload, dict):
+        pw = payload.get("password", "")
+        if isinstance(pw, str):
+            password = pw
+
+    if not auth_obj.verify(password):
+        auth_obj.record_failure(ip)
+        logger.warning("Auth failure from %s", ip)
+        return JSONResponse({"error": "invalid_password"}, status_code=401)
+
+    auth_obj.record_success(ip)
+    token = auth_obj.generate_token()
+    logger.info("Auth success from %s (token=%s)", ip, token_fingerprint(token))
+
+    resp = JSONResponse({"ok": True})
+    # Persistent cookie matching the token TTL. Logout button revokes both
+    # cookie and token; idle reaper kills the PTY independently.
+    set_session_cookie(
+        resp,
+        token,
+        max_age=int(auth_obj.token_ttl),
+        secure=_cookie_secure(request),
+    )
+    return resp
+
+
+@router.post("/verify")
+async def verify(request: Request) -> JSONResponse:
+    """Return ``{ok: true|false}`` for the cookie's token; rate-limited per IP."""
+    if not _origin_check_ok(request):
+        return JSONResponse({"error": "origin_not_allowed"}, status_code=403)
+
+    auth_obj = get_authenticator()
+    ip = _client_ip(request)
+    if not auth_obj.check_verify_rate(ip):
+        return JSONResponse(
+            {"error": "rate_limited"},
+            status_code=429,
+        )
+
+    token = read_session_cookie(request)
+    ok = bool(token) and auth_obj.check_auth(token)  # type: ignore[arg-type]
+    return JSONResponse({"ok": ok})
+
+
+@router.post("/logout")
+async def logout(request: Request) -> JSONResponse:
+    """Revoke the cookie's token, kill its sticky PTY, expire the cookie."""
+    if not _origin_check_ok(request):
+        return JSONResponse({"error": "origin_not_allowed"}, status_code=403)
+
+    auth_obj = get_authenticator()
+    token = read_session_cookie(request)
+    if token:
+        auth_obj.revoke(token)
+        registry: SessionRegistry | None = getattr(request.app.state, "registry", None)
+        if registry is not None:
+            registry.discard(token)
+        logger.info("Logout for token=%s", token_fingerprint(token))
+
+    resp = JSONResponse({"ok": True})
+    clear_session_cookie(resp, secure=_cookie_secure(request))
+    return resp

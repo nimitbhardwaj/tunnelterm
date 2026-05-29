@@ -14,6 +14,7 @@ from tunnelterm.auth import (
     ENV_PASSWORD_VAR,
     AuthenticationError,
     Authenticator,
+    is_loopback_host,
     load_config,
     set_authenticator,
 )
@@ -58,8 +59,42 @@ def main() -> None:
         dest="allowed_origins",
         default=None,
         help=(
-            "Allowed Origin header value for WebSocket handshake. "
-            "Repeat to allow multiple. If unset, all origins accepted."
+            "Allowed Origin header value for browser requests. "
+            "Repeat to allow multiple. REQUIRED when binding to a "
+            "non-loopback host unless --allow-any-origin is given."
+        ),
+    )
+    parser.add_argument(
+        "--allow-any-origin",
+        action="store_true",
+        dest="allow_any_origin",
+        default=False,
+        help=(
+            "Disable the Origin allow-list entirely. UNSAFE on non-loopback "
+            "binds; use only for development / known-trusted environments."
+        ),
+    )
+    parser.add_argument(
+        "--cookie-insecure",
+        action="store_true",
+        dest="cookie_insecure",
+        default=False,
+        help=(
+            "Omit the Secure flag on session cookies. Required when serving "
+            "over plain HTTP from a non-loopback bind, but disables one "
+            "layer of XSS/MITM hardening. Default is to set Secure unless "
+            "bound to loopback."
+        ),
+    )
+    parser.add_argument(
+        "--enable-hsts",
+        action="store_true",
+        dest="enable_hsts",
+        default=False,
+        help=(
+            "Emit Strict-Transport-Security: max-age=31536000; includeSubDomains. "
+            "Only enable when the deployment is HTTPS-only (typically behind a "
+            "TLS-terminating reverse proxy)."
         ),
     )
     parser.add_argument(
@@ -116,10 +151,9 @@ def main() -> None:
             CONFIG_PATH,
         )
         sys.exit(2)
-    # Re-export to canonical env var so Authenticator (env path) sees it.
     os.environ[ENV_PASSWORD_VAR] = password
 
-    # Allowed origins
+    # Allowed origins (CLI > env > config, all merged).
     allowed_origins_raw: list[str] = []
     if args.allowed_origins:
         allowed_origins_raw.extend(args.allowed_origins)
@@ -130,6 +164,33 @@ def main() -> None:
     if isinstance(cfg_origins, list):
         allowed_origins_raw.extend(cfg_origins)
     allowed_origins = [o for o in allowed_origins_raw if o]
+
+    allow_any_origin = bool(args.allow_any_origin) or bool(
+        config.get("allow_any_origin", False)
+    )
+
+    # === Fail-closed origin policy on non-loopback binds ===
+    # We allow loopback binds without an allow-list (default-permissive for
+    # local CLI usage); anything else demands an explicit decision from the
+    # operator. This closes a CSWSH (cross-site WebSocket hijacking) hole.
+    if not is_loopback_host(host) and not allowed_origins and not allow_any_origin:
+        logger.error(
+            "Refusing to start on non-loopback host %r without an Origin "
+            "allow-list. Either pass --allowed-origin <url> (repeatable) for "
+            "each frontend, or pass --allow-any-origin to disable the check "
+            "(unsafe).",
+            host,
+        )
+        sys.exit(2)
+
+    # Cookie Secure default: on for non-loopback, off for loopback.
+    # --cookie-insecure forces it off either way.
+    if args.cookie_insecure:
+        cookie_secure = False
+    else:
+        cookie_secure = not is_loopback_host(host)
+
+    enable_hsts = bool(args.enable_hsts) or bool(config.get("enable_hsts", False))
 
     # Instantiate the singleton authenticator (fail-fast).
     try:
@@ -162,10 +223,21 @@ def main() -> None:
         "Starting tunnelterm on %s:%d (command=%r, idle_timeout=%.0fs)",
         host, port, command, idle_timeout,
     )
-    if allowed_origins:
+    if allow_any_origin:
+        logger.warning("Origin allow-list DISABLED (--allow-any-origin)")
+    elif allowed_origins:
         logger.info("Allowed origins: %s", ", ".join(allowed_origins))
     else:
-        logger.info("No origin allow-list set; all origins accepted")
+        logger.info("Loopback bind; Origin allow-list not required")
+    logger.info(
+        "Session cookie: HttpOnly=true Secure=%s SameSite=Strict",
+        cookie_secure,
+    )
+    if not cookie_secure and not is_loopback_host(host):
+        logger.warning(
+            "Cookies will NOT have the Secure flag (--cookie-insecure or "
+            "loopback inferred). Browsers may refuse to send them over HTTPS."
+        )
 
     from tunnelterm.main import run
 
@@ -176,6 +248,9 @@ def main() -> None:
         log_level=log_level_str.lower(),
         allowed_origins=allowed_origins,
         idle_timeout=idle_timeout,
+        cookie_secure=cookie_secure,
+        allow_any_origin=allow_any_origin,
+        enable_hsts=enable_hsts,
     )
 
 

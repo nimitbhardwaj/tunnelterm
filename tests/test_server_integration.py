@@ -1,11 +1,14 @@
 """End-to-end tests against a real running server subprocess.
 
-Covers:
-- /auth round-trip
-- /ws subprotocol-token handshake + echo
-- /auth rate-limit lockout
-- the original Ctrl+C regression: server must shut down within a few seconds
-  even with an active idle client connection.
+Covers the cookie-based auth surface introduced in v0.1.4:
+
+- POST /api/auth -> sets Set-Cookie: tt_session
+- POST /api/verify reads cookie -> {ok}
+- POST /api/logout clears cookie and kills sticky session
+- /ws reads cookie from handshake
+- /ws rejects connections without a cookie or with a stale cookie
+- Sticky-session: same cookie across two /ws connects reuses the PTY
+- Ctrl+D / Ctrl+C regressions still pass
 """
 
 from __future__ import annotations
@@ -19,9 +22,13 @@ import subprocess
 import sys
 import time
 
+import httpx
 import pytest
+from websockets.legacy.client import connect
 
 pytestmark = pytest.mark.asyncio
+
+COOKIE_NAME = "tt_session"
 
 
 def _free_port() -> int:
@@ -43,17 +50,24 @@ def _wait_port(port: int, timeout: float = 5.0) -> bool:
     return False
 
 
-def _start_server(port: int, command: str = "bash --norc --noprofile") -> subprocess.Popen:
+def _start_server(
+    port: int,
+    command: str = "bash --norc --noprofile",
+    extra_args: list[str] | None = None,
+) -> subprocess.Popen:
     env = os.environ.copy()
     env["TUNNELTERM_PASSWORD"] = "testpass"
     env["LOG_LEVEL"] = "WARNING"
+    args = [
+        sys.executable, "-m", "tunnelterm",
+        "--command", command,
+        "--port", str(port),
+        "--host", "127.0.0.1",
+    ]
+    if extra_args:
+        args.extend(extra_args)
     proc = subprocess.Popen(  # noqa: S603
-        [
-            sys.executable, "-m", "tunnelterm",
-            "--command", command,
-            "--port", str(port),
-            "--host", "127.0.0.1",
-        ],
+        args,
         env=env,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
@@ -65,54 +79,97 @@ def _start_server(port: int, command: str = "bash --norc --noprofile") -> subpro
     return proc
 
 
-async def _do_auth(port: int, password: str) -> dict:
-    """Send password to /auth and return the JSON response."""
-    from websockets.legacy.client import connect
-
-    async with connect(f"ws://127.0.0.1:{port}/auth") as ws:
-        await ws.send(json.dumps({"password": password}))
-        resp = await ws.recv()
-    return json.loads(resp)
+async def _login(port: int, password: str) -> tuple[int, dict, str | None]:
+    """POST /api/auth; return (status, json, cookie-value-or-None)."""
+    async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
+        r = await client.post("/api/auth", json={"password": password})
+    token = r.cookies.get(COOKIE_NAME)
+    try:
+        body = r.json()
+    except ValueError:
+        body = {}
+    return r.status_code, body, token
 
 
 async def test_auth_rejects_wrong_password() -> None:
     port = _free_port()
     proc = _start_server(port)
     try:
-        resp = await _do_auth(port, "WRONG")
-        assert resp.get("error") == "invalid_password"
+        status, body, token = await _login(port, "WRONG")
+        assert status == 401
+        assert body.get("error") == "invalid_password"
+        assert token is None
     finally:
         proc.terminate()
         proc.wait(timeout=3)
 
 
-async def test_auth_accepts_correct_password() -> None:
+async def test_auth_sets_cookie_on_success() -> None:
     port = _free_port()
     proc = _start_server(port)
     try:
-        resp = await _do_auth(port, "testpass")
-        assert "token" in resp
-        assert len(resp["token"]) >= 20
+        status, body, token = await _login(port, "testpass")
+        assert status == 200
+        assert body == {"ok": True}
+        assert token is not None
+        assert len(token) >= 20
     finally:
         proc.terminate()
         proc.wait(timeout=3)
 
 
-async def test_ws_subprotocol_handshake_and_echo() -> None:
-    from websockets.legacy.client import connect
-
+async def test_auth_cookie_attributes_are_secure() -> None:
+    """Cookie must be HttpOnly + SameSite=Strict at minimum."""
     port = _free_port()
     proc = _start_server(port)
     try:
-        token = (await _do_auth(port, "testpass"))["token"]
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
+            r = await client.post("/api/auth", json={"password": "testpass"})
+        set_cookie = r.headers.get("set-cookie", "")
+        assert "HttpOnly" in set_cookie
+        assert "SameSite=Strict" in set_cookie or "samesite=strict" in set_cookie.lower()
+    finally:
+        proc.terminate()
+        proc.wait(timeout=3)
+
+
+async def test_auth_cookie_is_persistent() -> None:
+    """Cookie always carries Max-Age matching the token TTL (no per-request opt-in)."""
+    port = _free_port()
+    proc = _start_server(port)
+    try:
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
+            r = await client.post("/api/auth", json={"password": "testpass"})
+        set_cookie = r.headers.get("set-cookie", "")
+        # Default token TTL is 24h = 86400s; expect a Max-Age in that ballpark.
+        lower = set_cookie.lower()
+        assert "max-age=" in lower
+        # Parse the Max-Age value and sanity-check it.
+        for part in set_cookie.split(";"):
+            part = part.strip()
+            if part.lower().startswith("max-age="):
+                value = int(part.split("=", 1)[1])
+                assert 3600 <= value <= 7 * 24 * 3600
+                break
+        else:
+            pytest.fail(f"no Max-Age found in: {set_cookie!r}")
+    finally:
+        proc.terminate()
+        proc.wait(timeout=3)
+
+
+async def test_ws_with_cookie_echoes() -> None:
+    port = _free_port()
+    proc = _start_server(port)
+    try:
+        _, _, token = await _login(port, "testpass")
+        assert token
         async with connect(
             f"ws://127.0.0.1:{port}/ws",
-            subprotocols=[f"tunnelterm.v1.token", token],  # type: ignore[arg-type]
+            extra_headers={"Cookie": f"{COOKIE_NAME}={token}"},
         ) as ws:
-            # Give bash a moment to print the prompt.
             await asyncio.sleep(0.3)
             await ws.send("echo PTY_OK\n")
-            # Read until we see PTY_OK or timeout.
             deadline = asyncio.get_event_loop().time() + 3.0
             seen = b""
             while asyncio.get_event_loop().time() < deadline:
@@ -126,66 +183,212 @@ async def test_ws_subprotocol_handshake_and_echo() -> None:
                     seen += msg.encode()
                 if b"PTY_OK" in seen:
                     break
-            assert b"PTY_OK" in seen, f"never saw PTY_OK; buffer = {seen[-200:]!r}"
+            assert b"PTY_OK" in seen, f"never saw PTY_OK; tail={seen[-200:]!r}"
     finally:
         proc.terminate()
         proc.wait(timeout=3)
 
 
-async def test_ws_rejects_missing_token() -> None:
-    from websockets.legacy.client import connect
-
+async def test_ws_rejects_no_cookie() -> None:
     port = _free_port()
     proc = _start_server(port)
     try:
-        # No subprotocol -> handshake should be rejected (1008).
         try:
             async with connect(f"ws://127.0.0.1:{port}/ws") as _ws:
                 pass
         except Exception:
-            return  # expected
-        pytest.fail("ws connection without token was unexpectedly accepted")
+            return  # expected: handshake rejected
+        pytest.fail("ws connection without cookie was unexpectedly accepted")
     finally:
         proc.terminate()
         proc.wait(timeout=3)
 
 
-async def test_rate_limit_after_many_failures() -> None:
+async def test_ws_rejects_bogus_cookie() -> None:
     port = _free_port()
     proc = _start_server(port)
     try:
-        # 5 failures should trip the limiter.
-        results = []
+        try:
+            async with connect(
+                f"ws://127.0.0.1:{port}/ws",
+                extra_headers={"Cookie": f"{COOKIE_NAME}=not-a-real-token"},
+            ) as _ws:
+                pass
+        except Exception:
+            return  # expected
+        pytest.fail("ws connection with bogus cookie was unexpectedly accepted")
+    finally:
+        proc.terminate()
+        proc.wait(timeout=3)
+
+
+async def test_auth_rate_limit_after_many_failures() -> None:
+    port = _free_port()
+    proc = _start_server(port)
+    try:
+        statuses: list[int] = []
         for _ in range(7):
-            results.append(await _do_auth(port, "BAD"))
-        # At least one of the later attempts must be rate-limited.
-        rate_limited = [r for r in results if r.get("error") == "rate_limited"]
-        assert len(rate_limited) >= 1, f"expected lockout among: {results}"
+            status, _, _ = await _login(port, "BAD")
+            statuses.append(status)
+        # At least one of the later attempts must be rate-limited (429).
+        assert 429 in statuses, f"expected lockout among: {statuses}"
+    finally:
+        proc.terminate()
+        proc.wait(timeout=3)
+
+
+async def test_verify_endpoint_uses_cookie() -> None:
+    port = _free_port()
+    proc = _start_server(port)
+    try:
+        # Login to populate cookie jar.
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
+            r_auth = await client.post("/api/auth", json={"password": "testpass"})
+            assert r_auth.status_code == 200
+            # Same client carries the cookie automatically.
+            r_ok = await client.post("/api/verify")
+            assert r_ok.status_code == 200
+            assert r_ok.json() == {"ok": True}
+
+        # Fresh client with no cookie -> ok=false.
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
+            r_no = await client.post("/api/verify")
+            assert r_no.status_code == 200
+            assert r_no.json() == {"ok": False}
+    finally:
+        proc.terminate()
+        proc.wait(timeout=3)
+
+
+async def test_verify_rate_limits_excessive_hits() -> None:
+    """The /api/verify endpoint enforces a per-IP per-minute cap."""
+    port = _free_port()
+    proc = _start_server(port)
+    try:
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
+            # Default cap is 60/min; fire 80 in a tight loop.
+            statuses = []
+            for _ in range(80):
+                r = await client.post("/api/verify")
+                statuses.append(r.status_code)
+        assert 429 in statuses, f"verify rate-limit never tripped: {statuses[-10:]}"
+    finally:
+        proc.terminate()
+        proc.wait(timeout=3)
+
+
+async def test_logout_clears_cookie_and_session() -> None:
+    port = _free_port()
+    proc = _start_server(port)
+    try:
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
+            r_auth = await client.post("/api/auth", json={"password": "testpass"})
+            assert r_auth.status_code == 200
+            token = client.cookies.get(COOKIE_NAME)
+            assert token
+
+            # Establish a sticky session so logout has something to discard.
+            async with connect(
+                f"ws://127.0.0.1:{port}/ws",
+                extra_headers={"Cookie": f"{COOKIE_NAME}={token}"},
+            ) as ws:
+                await asyncio.sleep(0.3)
+                await ws.send("MARKER=must-not-survive-logout\n")
+                await asyncio.sleep(0.3)
+
+            r_out = await client.post("/api/logout")
+            assert r_out.status_code == 200
+            assert r_out.json() == {"ok": True}
+
+            # Cookie value should now be empty (Set-Cookie ... ="" Max-Age=0).
+            set_cookie = r_out.headers.get("set-cookie", "")
+            assert "tt_session=" in set_cookie
+            assert "Max-Age=0" in set_cookie or "max-age=0" in set_cookie.lower()
+
+            # Token must no longer be valid (logout already wiped the jar's cookie).
+            client.cookies.set(COOKIE_NAME, token)
+            r_verify = await client.post("/api/verify")
+            assert r_verify.json() == {"ok": False}
+    finally:
+        proc.terminate()
+        proc.wait(timeout=3)
+
+
+async def test_refresh_preserves_shell_state() -> None:
+    """The same cookie across two /ws connects must hit the same PTY."""
+    port = _free_port()
+    proc = _start_server(port)
+    try:
+        _, _, token = await _login(port, "testpass")
+        assert token
+        cookie_header = f"{COOKIE_NAME}={token}"
+
+        async with connect(
+            f"ws://127.0.0.1:{port}/ws",
+            extra_headers={"Cookie": cookie_header},
+        ) as ws:
+            await asyncio.sleep(0.4)
+            await ws.send("MARKER=preserved-across-refresh\n")
+            await asyncio.sleep(0.4)
+            try:
+                while True:
+                    await asyncio.wait_for(ws.recv(), timeout=0.3)
+            except asyncio.TimeoutError:
+                pass
+
+        await asyncio.sleep(0.3)
+
+        async with connect(
+            f"ws://127.0.0.1:{port}/ws",
+            extra_headers={"Cookie": cookie_header},
+        ) as ws:
+            await asyncio.sleep(0.3)
+            replay_chunks: list[bytes] = []
+            try:
+                while True:
+                    msg = await asyncio.wait_for(ws.recv(), timeout=0.4)
+                    if isinstance(msg, bytes):
+                        replay_chunks.append(msg)
+            except asyncio.TimeoutError:
+                pass
+            replay = b"".join(replay_chunks)
+            assert b"MARKER=preserved-across-refresh" in replay, (
+                f"scrollback replay missing marker; tail={replay[-200:]!r}"
+            )
+
+            await ws.send("echo TEST-$MARKER\n")
+            seen = b""
+            deadline = asyncio.get_event_loop().time() + 3.0
+            while asyncio.get_event_loop().time() < deadline:
+                try:
+                    msg = await asyncio.wait_for(ws.recv(), timeout=0.4)
+                except asyncio.TimeoutError:
+                    continue
+                if isinstance(msg, bytes):
+                    seen += msg
+                if b"TEST-preserved-across-refresh" in seen:
+                    break
+            assert b"TEST-preserved-across-refresh" in seen, (
+                f"shell variable did not survive disconnect; tail={seen[-200:]!r}"
+            )
     finally:
         proc.terminate()
         proc.wait(timeout=3)
 
 
 async def test_ctrl_d_closes_session_cleanly() -> None:
-    """Regression: when the shell exits (Ctrl+D), the server must send a
-    {__tt: process_exit} frame AND close the WebSocket with a clean 1000 code,
-    AND the child process must be reaped (no zombie)."""
-    import os as _os
-
-    from websockets.legacy.client import connect
-
+    """When the shell exits, server sends process_exit + clean WS close + no zombie."""
     port = _free_port()
     proc = _start_server(port, command="bash --norc --noprofile")
     try:
-        token = (await _do_auth(port, "testpass"))["token"]
+        _, _, token = await _login(port, "testpass")
         async with connect(
             f"ws://127.0.0.1:{port}/ws",
-            subprotocols=["tunnelterm.v1.token", token],  # type: ignore[arg-type]
+            extra_headers={"Cookie": f"{COOKIE_NAME}={token}"},
         ) as ws:
-            await asyncio.sleep(0.4)  # let bash print its prompt
-            await ws.send("\x04")  # Ctrl+D (EOT)
+            await asyncio.sleep(0.4)
+            await ws.send("\x04")  # Ctrl+D
 
-            # Drain frames; expect process_exit and then a clean close.
             saw_exit = False
             close_code = None
             deadline = asyncio.get_event_loop().time() + 5.0
@@ -195,28 +398,19 @@ async def test_ctrl_d_closes_session_cleanly() -> None:
                 except asyncio.TimeoutError:
                     continue
                 except Exception:
-                    # Connection closed; capture close code.
                     close_code = ws.close_code
                     break
                 if isinstance(msg, str) and '"__tt":"process_exit"' in msg:
                     saw_exit = True
 
-            # If the loop exited without an exception we may still need to
-            # close the context manager; once closed, close_code is set.
             if close_code is None:
                 close_code = ws.close_code
 
-        assert saw_exit, "did not receive process_exit control frame"
+        assert saw_exit, "did not receive process_exit"
         assert close_code == 1000, f"expected clean close 1000, got {close_code}"
-
-        # Server process must still be alive (only the PTY child should exit).
         assert proc.poll() is None, "server died after Ctrl+D"
 
-        # No bash --norc --noprofile zombies should remain under our server.
-        # macOS `ps -o stat=` returns 'Z' for zombies.
-        import subprocess as _sp
-
-        result = _sp.run(  # noqa: S603
+        result = subprocess.run(  # noqa: S603
             ["ps", "-A", "-o", "ppid=,stat=,command="],
             capture_output=True,
             text=True,
@@ -228,31 +422,26 @@ async def test_ctrl_d_closes_session_cleanly() -> None:
             and "Z" in line.split(None, 2)[1]
         ]
         assert not zombies, f"zombie children remain: {zombies}"
-        _ = _os  # silence unused-import
     finally:
         proc.terminate()
         proc.wait(timeout=3)
 
 
 async def test_shutdown_under_idle_connection_is_fast() -> None:
-    """The original Ctrl+C regression: SIGINT with an active client must
-    complete shutdown within 3s, not hang for 10+s."""
-    from websockets.legacy.client import connect
-
+    """SIGINT with an active client completes within 3s."""
     port = _free_port()
     proc = _start_server(port)
     try:
-        token = (await _do_auth(port, "testpass"))["token"]
+        _, _, token = await _login(port, "testpass")
         async with connect(
             f"ws://127.0.0.1:{port}/ws",
-            subprotocols=[f"tunnelterm.v1.token", token],  # type: ignore[arg-type]
+            extra_headers={"Cookie": f"{COOKIE_NAME}={token}"},
         ) as ws:
-            await asyncio.sleep(0.5)  # let server fully set up the bridge
+            await asyncio.sleep(0.5)
 
             start = time.monotonic()
             proc.send_signal(signal.SIGINT)
 
-            # Drain any remaining messages quickly so ws doesn't hold us up.
             async def _drain() -> None:
                 try:
                     while True:
@@ -273,7 +462,6 @@ async def test_shutdown_under_idle_connection_is_fast() -> None:
                 await drain_task
             except asyncio.CancelledError:
                 pass
-            # Should be well under 3s.
             assert elapsed < 3.0, f"shutdown took {elapsed:.2f}s"
     finally:
         if proc.poll() is None:
@@ -281,139 +469,24 @@ async def test_shutdown_under_idle_connection_is_fast() -> None:
             proc.wait(timeout=3)
 
 
-async def test_verify_endpoint_validates_token() -> None:
-    """/verify accepts a valid token, rejects an invalid one."""
-    from websockets.legacy.client import connect
-
+async def test_refuses_nonloopback_without_origin_allowlist() -> None:
+    """A non-loopback bind without --allowed-origin must refuse to start."""
     port = _free_port()
-    proc = _start_server(port)
-    try:
-        token = (await _do_auth(port, "testpass"))["token"]
-
-        # Valid token.
-        async with connect(f"ws://127.0.0.1:{port}/verify") as ws:
-            await ws.send(json.dumps({"token": token}))
-            resp = json.loads(await ws.recv())
-        assert resp == {"ok": True}
-
-        # Invalid token.
-        async with connect(f"ws://127.0.0.1:{port}/verify") as ws:
-            await ws.send(json.dumps({"token": "not-a-real-token"}))
-            resp = json.loads(await ws.recv())
-        assert resp == {"ok": False}
-
-        # Missing token.
-        async with connect(f"ws://127.0.0.1:{port}/verify") as ws:
-            await ws.send(json.dumps({}))
-            resp = json.loads(await ws.recv())
-        assert resp == {"ok": False}
-    finally:
-        proc.terminate()
-        proc.wait(timeout=3)
-
-
-async def test_refresh_preserves_shell_state() -> None:
-    """The same token across two /ws connects must hit the same PTY process.
-
-    Tests the "page refresh keeps your shell" feature: set a shell variable in
-    the first connection, disconnect, reconnect with the same token, and
-    confirm the variable survives.
-    """
-    from websockets.legacy.client import connect
-
-    port = _free_port()
-    proc = _start_server(port)
-    try:
-        token = (await _do_auth(port, "testpass"))["token"]
-
-        # === First connection ===
-        async with connect(
-            f"ws://127.0.0.1:{port}/ws",
-            subprotocols=["tunnelterm.v1.token", token],  # type: ignore[arg-type]
-        ) as ws:
-            await asyncio.sleep(0.4)
-            await ws.send("MARKER=preserved-across-refresh\n")
-            await asyncio.sleep(0.4)
-            # Drain.
-            try:
-                while True:
-                    await asyncio.wait_for(ws.recv(), timeout=0.3)
-            except asyncio.TimeoutError:
-                pass
-        # ws closed; bash should still be alive in the session.
-
-        await asyncio.sleep(0.3)
-
-        # === Reconnect with same token ===
-        async with connect(
-            f"ws://127.0.0.1:{port}/ws",
-            subprotocols=["tunnelterm.v1.token", token],  # type: ignore[arg-type]
-        ) as ws:
-            # Replay buffer should arrive first.
-            await asyncio.sleep(0.3)
-            replay_chunks: list[bytes] = []
-            try:
-                while True:
-                    msg = await asyncio.wait_for(ws.recv(), timeout=0.4)
-                    if isinstance(msg, bytes):
-                        replay_chunks.append(msg)
-            except asyncio.TimeoutError:
-                pass
-            replay = b"".join(replay_chunks)
-            assert b"MARKER=preserved-across-refresh" in replay, (
-                f"scrollback replay missing the marker; got: {replay[-200:]!r}"
-            )
-
-            # Confirm the shell process actually still has the variable.
-            await ws.send("echo TEST-$MARKER\n")
-            seen = b""
-            deadline = asyncio.get_event_loop().time() + 3.0
-            while asyncio.get_event_loop().time() < deadline:
-                try:
-                    msg = await asyncio.wait_for(ws.recv(), timeout=0.4)
-                except asyncio.TimeoutError:
-                    continue
-                if isinstance(msg, bytes):
-                    seen += msg
-                if b"TEST-preserved-across-refresh" in seen:
-                    break
-            assert b"TEST-preserved-across-refresh" in seen, (
-                f"shell variable did not survive disconnect; tail: {seen[-200:]!r}"
-            )
-    finally:
-        proc.terminate()
-        proc.wait(timeout=3)
-
-
-async def test_logout_kills_sticky_session() -> None:
-    """After /logout, the same token is rejected AND the PTY is gone."""
-    from websockets.legacy.client import connect
-
-    port = _free_port()
-    proc = _start_server(port)
-    try:
-        token = (await _do_auth(port, "testpass"))["token"]
-
-        # Establish a sticky session.
-        async with connect(
-            f"ws://127.0.0.1:{port}/ws",
-            subprotocols=["tunnelterm.v1.token", token],  # type: ignore[arg-type]
-        ) as ws:
-            await asyncio.sleep(0.3)
-            await ws.send("MARKER=must-not-survive-logout\n")
-            await asyncio.sleep(0.3)
-
-        # Logout.
-        async with connect(f"ws://127.0.0.1:{port}/logout") as ws:
-            await ws.send(json.dumps({"token": token}))
-            resp = json.loads(await ws.recv())
-        assert resp == {"ok": True}
-
-        # Verify token is dead.
-        async with connect(f"ws://127.0.0.1:{port}/verify") as ws:
-            await ws.send(json.dumps({"token": token}))
-            resp = json.loads(await ws.recv())
-        assert resp == {"ok": False}
-    finally:
-        proc.terminate()
-        proc.wait(timeout=3)
+    env = os.environ.copy()
+    env["TUNNELTERM_PASSWORD"] = "testpass"
+    env["LOG_LEVEL"] = "WARNING"
+    proc = subprocess.Popen(  # noqa: S603
+        [
+            sys.executable, "-m", "tunnelterm",
+            "--command", "bash --norc --noprofile",
+            "--port", str(port),
+            "--host", "0.0.0.0",
+        ],
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    rc = proc.wait(timeout=5)
+    stderr = (proc.stderr.read() if proc.stderr else b"").decode()
+    assert rc == 2, f"expected exit code 2, got {rc}; stderr={stderr!r}"
+    assert "non-loopback" in stderr.lower() or "allow" in stderr.lower(), stderr
