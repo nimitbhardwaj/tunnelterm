@@ -1,4 +1,4 @@
-"""Authentication: password verification, session tokens, brute-force rate limit.
+"""Authentication: password verification, TOTP, session tokens, brute-force rate limit.
 
 A single module-level :class:`Authenticator` instance is created at startup
 (via :func:`get_authenticator`) and shared across all request handlers. Tokens
@@ -8,6 +8,12 @@ binding).
 
 Rate limiting is per source IP, with exponential backoff after consecutive
 failures.
+
+Optionally, a TOTP (RFC 6238) second factor can be required on top of the
+password. When ``require_totp`` is true and a ``totp_secret`` is configured,
+``/api/auth`` will only mint a session token when the caller supplies a
+current 6-digit code from a TOTP app (Google Authenticator, 1Password, etc.)
+in addition to the password.
 """
 
 from __future__ import annotations
@@ -22,6 +28,8 @@ import tomllib
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import pyotp
+
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
@@ -29,6 +37,13 @@ logger = logging.getLogger(__name__)
 
 CONFIG_PATH = Path.home() / ".config" / "tunnelterm" / "config.toml"
 ENV_PASSWORD_VAR = "TUNNELTERM_PASSWORD"
+ENV_TOTP_SECRET_VAR = "TUNNELTERM_TOTP_SECRET"
+ENV_REQUIRE_TOTP_VAR = "TUNNELTERM_REQUIRE_TOTP"
+
+# Clock-skew window for TOTP verification. pyotp's ``valid_window=1`` accepts
+# the previous, current, and next 30-second step. This tolerates a few seconds
+# of clock drift between the server and the authenticator app.
+TOTP_VALID_WINDOW = 1
 
 # Token defaults
 DEFAULT_TOKEN_TTL_SECONDS = 24 * 60 * 60  # 24h
@@ -85,13 +100,15 @@ class _TokenRecord:
 
 
 class Authenticator:
-    """Password verification + session token store + rate limiter."""
+    """Password verification + optional TOTP + session token store + rate limiter."""
 
     def __init__(
         self,
         password: str | None = None,
         token_ttl: float = DEFAULT_TOKEN_TTL_SECONDS,
         max_tokens: int = DEFAULT_MAX_TOKENS,
+        totp_secret: str | None = None,
+        require_totp: bool = False,
     ) -> None:
         """Initialize.
 
@@ -99,9 +116,16 @@ class Authenticator:
             password: Plaintext password. If None, loaded from env/config.
             token_ttl: Token lifetime in seconds.
             max_tokens: LRU cap on outstanding tokens.
+            totp_secret: Base32 TOTP shared secret (e.g. ``"JBSWY3DPEHPK3PXP"``).
+                If None, loaded from env/config.
+            require_totp: When True (and ``totp_secret`` is set), ``/api/auth``
+                demands a valid TOTP code in addition to the password. Ignored
+                when no secret is configured -- TOTP cannot be enforced without
+                one.
 
         Raises:
-            AuthenticationError: If no password is configured.
+            AuthenticationError: If no password is configured, or ``require_totp``
+                is True but no TOTP secret is available.
 
         """
         loaded = password if password is not None else self._load_password()
@@ -114,6 +138,28 @@ class Authenticator:
         self._password: str = loaded
         self._token_ttl: float = token_ttl
         self._max_tokens: int = max_tokens
+
+        # TOTP second factor. The pyotp.TOTP object is cheap; building it lazily
+        # is unnecessary. pyotp validates the Base32 string lazily at
+        # verify()/now() time, so we generate one code here to fail fast on a
+        # malformed secret (binascii.Error, a subclass of ValueError).
+        loaded_totp = totp_secret if totp_secret is not None else self._load_totp_secret()
+        self._totp: pyotp.TOTP | None = None
+        if loaded_totp:
+            try:
+                self._totp = pyotp.TOTP(loaded_totp)
+                self._totp.now()
+            except ValueError as e:
+                msg = f"Invalid TOTP secret: {e}"
+                raise AuthenticationError(msg) from e
+        self._require_totp: bool = bool(require_totp and self._totp is not None)
+        if require_totp and self._totp is None:
+            msg = (
+                f"--require-totp / require_totp was set, but no TOTP secret is "
+                f"configured. Set {ENV_TOTP_SECRET_VAR} or 'totp_secret' in config."
+            )
+            raise AuthenticationError(msg)
+
         # token -> record. Insertion order = LRU order.
         self._tokens: dict[str, _TokenRecord] = {}
         # ip -> list of failure monotonic-times within window
@@ -127,6 +173,16 @@ class Authenticator:
     def token_ttl(self) -> float:
         """Token lifetime, in seconds (read-only)."""
         return self._token_ttl
+
+    @property
+    def require_totp(self) -> bool:
+        """True if ``/api/auth`` also requires a valid TOTP code."""
+        return self._require_totp
+
+    @property
+    def totp_configured(self) -> bool:
+        """True if a TOTP secret is loaded (regardless of whether it's required)."""
+        return self._totp is not None
 
     # ---------- password loading ----------
 
@@ -151,11 +207,53 @@ class Authenticator:
                 logger.warning("Failed to load config file %s: %s", CONFIG_PATH, e)
         return None
 
+    @staticmethod
+    def _load_totp_secret() -> str | None:
+        """Load Base32 TOTP secret from env var, falling back to config file."""
+        env_secret = os.environ.get(ENV_TOTP_SECRET_VAR)
+        if env_secret:
+            logger.debug("TOTP secret loaded from environment variable")
+            return env_secret
+
+        if CONFIG_PATH.exists():
+            try:
+                with CONFIG_PATH.open("rb") as f:
+                    config = tomllib.load(f)
+                secret = config.get("totp_secret")
+                if isinstance(secret, str) and secret:
+                    logger.debug("TOTP secret loaded from config file")
+                    return secret
+            except (OSError, tomllib.TOMLDecodeError) as e:
+                logger.warning("Failed to load config file %s: %s", CONFIG_PATH, e)
+        return None
+
     # ---------- verification ----------
 
     def verify(self, password: str) -> bool:
         """Constant-time password comparison."""
         return secrets.compare_digest(self._password, password)
+
+    def verify_totp(self, code: str | int | None) -> bool:
+        """Return True if ``code`` is a valid TOTP code for the configured secret.
+
+        Accepts ``None`` (missing), non-string, or malformed input as invalid
+        without raising. Whitespace is stripped so users can paste codes with
+        stray spaces. Uses a ``valid_window`` of :data:`TOTP_VALID_WINDOW`
+        (default 1 step = ±30s) to tolerate clock drift.
+        """
+        if self._totp is None:
+            return False
+        if code is None:
+            return False
+        # Authenticator apps only emit digits, but be lenient about the wire
+        # type -- a JSON body could deliver an int if a scriptable client is
+        # used. We only accept strings here; anything else is invalid.
+        if not isinstance(code, str):
+            return False
+        cleaned = code.strip()
+        if not cleaned or not cleaned.isdigit():
+            return False
+        return bool(self._totp.verify(cleaned, valid_window=TOTP_VALID_WINDOW))
 
     # ---------- token store ----------
 

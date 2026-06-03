@@ -100,15 +100,29 @@ async def auth(
         )
 
     password = ""
+    totp_code: str | int | None = None
     if isinstance(payload, dict):
         pw = payload.get("password", "")
         if isinstance(pw, str):
             password = pw
+        raw_totp = payload.get("totp", None)
+        if isinstance(raw_totp, (str, int)):
+            totp_code = raw_totp
 
     if not auth_obj.verify(password):
         auth_obj.record_failure(ip)
-        logger.warning("Auth failure from %s", ip)
+        logger.warning("Auth failure from %s (bad password)", ip)
         return JSONResponse({"error": "invalid_password"}, status_code=401)
+
+    # TOTP second factor. Only checked after the password is correct, so a
+    # wrong password alone never reaches the TOTP code path (avoids leaking
+    # whether TOTP is required). The error is intentionally generic so an
+    # attacker cannot tell apart "no TOTP given" from "wrong TOTP".
+    if auth_obj.require_totp:
+        if not auth_obj.verify_totp(totp_code):
+            auth_obj.record_failure(ip)
+            logger.warning("Auth failure from %s (bad TOTP)", ip)
+            return JSONResponse({"error": "invalid_credentials"}, status_code=401)
 
     auth_obj.record_success(ip)
     token = auth_obj.generate_token()
@@ -143,6 +157,25 @@ async def verify(request: Request) -> JSONResponse:
     token = read_session_cookie(request)
     ok = bool(token) and auth_obj.check_auth(token)  # type: ignore[arg-type]
     return JSONResponse({"ok": ok})
+
+
+@router.get("/auth/mode")
+async def auth_mode(request: Request) -> JSONResponse:
+    """Return the current auth mode (which login factors are required).
+
+    Used by the login form to know whether to render the TOTP field. This is
+    a deployment-wide constant for any given server instance, so the response
+    carries no per-user data; we still rate-limit it to the ``/verify`` bucket
+    (shared sliding-window per IP) to prevent abuse.
+    """
+    if not _origin_check_ok(request):
+        return JSONResponse({"error": "origin_not_allowed"}, status_code=403)
+
+    auth_obj = get_authenticator()
+    ip = _client_ip(request)
+    if not auth_obj.check_verify_rate(ip):
+        return JSONResponse({"error": "rate_limited"}, status_code=429)
+    return JSONResponse({"require_totp": auth_obj.require_totp})
 
 
 @router.post("/logout")

@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 license = "MIT"
 dependencies = [
     "fastapi>=0.115.0",
+    "pyotp>=2.9.0",
     "uvicorn[standard]>=0.34.0",
 ]
 # Version is derived from the latest git tag by setuptools-scm.

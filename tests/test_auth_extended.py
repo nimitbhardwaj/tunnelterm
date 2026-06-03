@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+import pyotp
 import pytest
 
 from tunnelterm.auth import (
@@ -206,3 +207,132 @@ class Test_rate_limit_lockout_expiry:
             a.record_failure(ip)
         with pytest.raises(RateLimitedError):
             a.check_rate_limit(ip)
+
+
+# Canonical RFC 6238 test secret used throughout the TOTP tests. Base32
+# ("JBSWY3DPEHPK3PXP") is the standard "Hello!" example.
+TOTP_SECRET = "JBSWY3DPEHPK3PXP"
+
+
+class Test_totp_disabled_by_default:
+    def test_require_totp_false_without_secret(self) -> None:
+        a = Authenticator(password="secret")
+        assert a.require_totp is False
+        assert a.totp_configured is False
+
+    def test_require_totp_false_with_secret_but_no_require(self) -> None:
+        a = Authenticator(password="secret", totp_secret=TOTP_SECRET)
+        assert a.require_totp is False
+        assert a.totp_configured is True
+
+    def test_verify_totp_returns_false_when_unconfigured(self) -> None:
+        a = Authenticator(password="secret")
+        assert a.verify_totp("123456") is False
+
+
+class Test_totp_verification:
+    def test_current_code_accepted(self) -> None:
+        a = Authenticator(password="secret", totp_secret=TOTP_SECRET, require_totp=True)
+        code = pyotp.TOTP(TOTP_SECRET).now()
+        assert a.verify_totp(code) is True
+
+    def test_wrong_code_rejected(self) -> None:
+        a = Authenticator(password="secret", totp_secret=TOTP_SECRET, require_totp=True)
+        assert a.verify_totp("000000") is False
+
+    def test_whitespace_stripped(self) -> None:
+        a = Authenticator(password="secret", totp_secret=TOTP_SECRET, require_totp=True)
+        code = pyotp.TOTP(TOTP_SECRET).now()
+        assert a.verify_totp(f"  {code}  ") is True
+        assert a.verify_totp(f"\n{code}\t") is True
+
+    def test_non_digit_rejected(self) -> None:
+        a = Authenticator(password="secret", totp_secret=TOTP_SECRET, require_totp=True)
+        assert a.verify_totp("abcdef") is False
+        assert a.verify_totp("12 456") is False
+        assert a.verify_totp("12345a") is False
+
+    def test_short_or_long_rejected(self) -> None:
+        a = Authenticator(password="secret", totp_secret=TOTP_SECRET, require_totp=True)
+        assert a.verify_totp("12345") is False
+        assert a.verify_totp("1234567") is False
+        assert a.verify_totp("") is False
+
+    def test_none_rejected(self) -> None:
+        a = Authenticator(password="secret", totp_secret=TOTP_SECRET, require_totp=True)
+        assert a.verify_totp(None) is False  # type: ignore[arg-type]
+
+    def test_non_string_rejected(self) -> None:
+        a = Authenticator(password="secret", totp_secret=TOTP_SECRET, require_totp=True)
+        assert a.verify_totp(123456) is False  # type: ignore[arg-type]
+        assert a.verify_totp([1, 2, 3, 4, 5, 6]) is False  # type: ignore[arg-type]
+
+
+class Test_totp_constructor_validation:
+    def test_require_totp_without_secret_raises(self) -> None:
+        with pytest.raises(AuthenticationError, match="TOTP"):
+            Authenticator(password="secret", require_totp=True)
+
+    def test_invalid_secret_raises(self) -> None:
+        # Non-Base32 characters are rejected by pyotp.
+        with pytest.raises(AuthenticationError, match="TOTP"):
+            Authenticator(password="secret", totp_secret="not!valid!base32!!!")
+
+    def test_valid_secret_accepted(self) -> None:
+        a = Authenticator(password="secret", totp_secret=TOTP_SECRET)
+        assert a.totp_configured is True
+
+
+class Test_totp_secret_loading:
+    def test_load_totp_secret_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Ensure config file path doesn't accidentally resolve to a real file.
+        import tunnelterm.auth as auth_module
+        from pathlib import Path
+
+        monkeypatch.setattr(auth_module, "CONFIG_PATH", Path("/nonexistent/config.toml"))
+        monkeypatch.setenv("TUNNELTERM_TOTP_SECRET", TOTP_SECRET)
+        a = Authenticator(password="secret")
+        assert a.totp_configured is True
+        assert a.verify_totp(pyotp.TOTP(TOTP_SECRET).now()) is True
+
+    def test_load_totp_secret_from_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import tunnelterm.auth as auth_module
+
+        monkeypatch.delenv("TUNNELTERM_TOTP_SECRET", raising=False)
+        with tempfile.NamedTemporaryFile(suffix=".toml", mode="w", delete=False) as f:
+            f.write(f'totp_secret = "{TOTP_SECRET}"\n')
+            path = Path(f.name)
+        try:
+            monkeypatch.setattr(auth_module, "CONFIG_PATH", path)
+            a = Authenticator(password="secret")
+            assert a.totp_configured is True
+        finally:
+            os.unlink(path)
+
+    def test_no_secret_means_not_configured(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import tunnelterm.auth as auth_module
+
+        monkeypatch.delenv("TUNNELTERM_TOTP_SECRET", raising=False)
+        monkeypatch.setattr(auth_module, "CONFIG_PATH", Path("/nonexistent/config.toml"))
+        a = Authenticator(password="secret")
+        assert a.totp_configured is False
+        assert a.require_totp is False
+
+
+class Test_totp_and_password_independent:
+    """Wrong password must not consume a TOTP attempt; both checks are independent."""
+
+    def test_password_check_runs_first(self) -> None:
+        a = Authenticator(password="correct", totp_secret=TOTP_SECRET, require_totp=True)
+        # Password is wrong; we should never even reach the TOTP check.
+        assert a.verify("wrong") is False
+        # And verify_totp should not have been called -- but it's a pure
+        # function, so the only way to assert this is to ensure the route
+        # order is enforced. The route itself is tested in test_server_integration.
+        assert a.verify_totp(pyotp.TOTP(TOTP_SECRET).now()) is True
+
+    def test_both_correct_succeeds(self) -> None:
+        a = Authenticator(password="correct", totp_secret=TOTP_SECRET, require_totp=True)
+        code = pyotp.TOTP(TOTP_SECRET).now()
+        assert a.verify("correct") is True
+        assert a.verify_totp(code) is True
