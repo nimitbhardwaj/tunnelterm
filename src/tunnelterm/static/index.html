@@ -50,6 +50,23 @@
           </svg>
         </button>
       </div>
+      <div class="input-row totp-row" id="totp-row" hidden>
+        <label for="totp" class="sr-only">Authenticator code</label>
+        <input
+          type="text"
+          id="totp"
+          placeholder="123 456"
+          inputmode="numeric"
+          pattern="[0-9 ]*"
+          autocomplete="one-time-code"
+          autocapitalize="off"
+          autocorrect="off"
+          spellcheck="false"
+          maxlength="7"
+          aria-describedby="totp-hint"
+        >
+      </div>
+      <p class="form-hint" id="totp-hint" hidden>Enter the 6-digit code from your authenticator app.</p>
       <button type="submit" class="primary">
         <span class="spinner" aria-hidden="true"></span>
         <span class="label">Connect</span>

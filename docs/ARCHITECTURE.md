@@ -13,8 +13,13 @@ Browser                    tunnelterm (FastAPI/uvicorn)
   GET /static/*
 
   POST /api/auth           auth_routes.py
-    body: {password}         → verify password, mint token, Set-Cookie (HttpOnly; Secure; SameSite=Strict)
+    body: {password, totp?}  → verify password (and TOTP if --require-totp),
+                              mint token, Set-Cookie (HttpOnly; Secure; SameSite=Strict)
     response: {ok: true}
+
+  GET  /api/auth/mode       auth_routes.py
+                              → {require_totp: bool}; login form probes this at
+                                boot to decide whether to render the TOTP field
 
   POST /api/verify          auth_routes.py
     cookie: tt_session        → check token validity (rate-limited)
@@ -37,7 +42,7 @@ Browser                    tunnelterm (FastAPI/uvicorn)
 **`tunnelterm.main`** — `create_app()` builds the FastAPI app; `run()` launches uvicorn. Static assets (`/static`) are mounted here.
 
 ### `auth`
-**`tunnelterm.auth`** — `Authenticator` holds the password, token store (LRU, 64 max, 24h TTL), and per-IP rate limiters. Singleton, initialized once at startup.
+**`tunnelterm.auth`** — `Authenticator` holds the password, optional TOTP secret, token store (LRU, 64 max, 24h TTL), and per-IP rate limiters. Singleton, initialized once at startup. When `require_totp` is True, `/api/auth` demands a valid RFC 6238 TOTP code in addition to the password; `verify_totp()` uses a ±1 step (30 s) clock-skew window.
 
 `TrustedProxies` resolves `X-Forwarded-For` / `X-Forwarded-Proto` from trusted CIDRs only (default: loopback), preventing spoofing.
 
@@ -87,14 +92,16 @@ Text frames that contain `{__tt: ...}` JSON are treated as control frames (e.g. 
 | Single active session | `in_use` flag on token record; second WS connect is rejected |
 | Rate limit on /verify | 300 hits/IP/min sliding window |
 | XFF spoofing blocked | Only trust XFF from configured CIDRs (default: loopback) |
+| Optional 2FA | RFC 6238 TOTP via `pyotp`, with ±1 step clock-skew window |
 
 ## Data flows
 
 ### Auth → session lifecycle
 
 ```
-browser POST /api/auth (password)
-  → Authenticator.verify()
+browser POST /api/auth (password, totp?)
+  → Authenticator.verify(password)
+  → (if require_totp) Authenticator.verify_totp(totp)
   → generate_token() → store in _tokens dict
   → set_session_cookie(token, HttpOnly; Secure; SameSite=Strict)
 ```

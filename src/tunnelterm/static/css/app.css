@@ -86,6 +86,35 @@ a { color: var(--accent); }
 
 .login-card form { display: flex; flex-direction: column; gap: 14px; }
 
+/* TOTP row: hidden by default via the [hidden] attribute, then revealed
+   with a small slide-in when the server reports require_totp = true. */
+.totp-row[hidden] { display: none; }
+.totp-row {
+  animation: totpReveal 180ms ease;
+}
+.totp-row input {
+  letter-spacing: 0.18em;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  font-weight: 500;
+  padding-left: 14px;  /* override the right-padded .input-row default */
+}
+.totp-row input:focus {
+  letter-spacing: 0.18em;  /* prevent layout shift on focus */
+}
+@keyframes totpReveal {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.form-hint {
+  margin: -4px 0 0;
+  font-size: 12px;
+  color: var(--fg-dim);
+  text-align: center;
+}
+.form-hint[hidden] { display: none; }
+
 .input-row {
   position: relative;
 }
@@ -315,7 +344,10 @@ button.primary.loading .label { opacity: 0.85; }
   text-align: right;
 }
 
-select, input[type="text"], input[type="number"] {
+/* Settings-drawer selects only. Scoped so this rule doesn't leak into the
+   login form's text inputs (the global `input[type="text"]` selector was
+   previously making the TOTP field tiny: max-width 200px, 13px font, etc.). */
+.setting-section select {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -325,7 +357,7 @@ select, input[type="text"], input[type="number"] {
   flex: 1;
   max-width: 200px;
 }
-select:focus, input[type="text"]:focus, input[type="number"]:focus {
+.setting-section select:focus {
   outline: none;
   border-color: var(--accent);
 }

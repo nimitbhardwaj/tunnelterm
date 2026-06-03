@@ -12,8 +12,11 @@ from tunnelterm import __version__
 from tunnelterm.auth import (
     CONFIG_PATH,
     ENV_PASSWORD_VAR,
+    ENV_REQUIRE_TOTP_VAR,
+    ENV_TOTP_SECRET_VAR,
     AuthenticationError,
     Authenticator,
+    get_authenticator,
     is_loopback_host,
     load_config,
     set_authenticator,
@@ -126,6 +129,17 @@ def main() -> None:
         default=None,
         help="Log level (DEBUG, INFO, WARNING, ERROR)",
     )
+    parser.add_argument(
+        "--require-totp",
+        action="store_true",
+        dest="require_totp",
+        default=None,
+        help=(
+            "Require a valid TOTP code in addition to the password on /api/auth. "
+            "A TOTP secret must also be configured via TUNNELTERM_TOTP_SECRET "
+            "env var or 'totp_secret' in the config file."
+        ),
+    )
     args = parser.parse_args()
 
     log_level_str = (args.log_level or os.environ.get("LOG_LEVEL", "INFO")).upper()
@@ -164,6 +178,33 @@ def main() -> None:
         )
         sys.exit(2)
     os.environ[ENV_PASSWORD_VAR] = password
+
+    # Resolve TOTP secret (CLI > env > config). Secret can be empty; the
+    # Authenticator will treat a missing secret as "TOTP not configured".
+    totp_secret = os.environ.get(ENV_TOTP_SECRET_VAR) or config.get("totp_secret")
+    if totp_secret and not isinstance(totp_secret, str):
+        logger.warning("ignoring non-string 'totp_secret' in config file")
+        totp_secret = None
+    if totp_secret:
+        os.environ[ENV_TOTP_SECRET_VAR] = totp_secret
+
+    # Resolve require_totp (CLI > env > config). env/config accept common
+    # truthy spellings (1/true/yes/on); anything else is treated as false.
+    def _truthy(val: object) -> bool:
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, (int, float)):
+            return bool(val)
+        if isinstance(val, str):
+            return val.strip().lower() in ("1", "true", "yes", "on")
+        return False
+
+    if args.require_totp is not None:
+        require_totp = bool(args.require_totp)
+    else:
+        require_totp = _truthy(os.environ.get(ENV_REQUIRE_TOTP_VAR)) or _truthy(
+            config.get("require_totp", False)
+        )
 
     # Allowed origins (CLI > env > config, all merged).
     allowed_origins_raw: list[str] = []
@@ -218,7 +259,13 @@ def main() -> None:
 
     # Instantiate the singleton authenticator (fail-fast).
     try:
-        set_authenticator(Authenticator(password=password))
+        set_authenticator(
+            Authenticator(
+                password=password,
+                totp_secret=totp_secret,
+                require_totp=require_totp,
+            )
+        )
     except AuthenticationError as e:
         logger.error("authentication setup failed: %s", e)
         sys.exit(2)
@@ -257,6 +304,13 @@ def main() -> None:
         "Session cookie: HttpOnly=true Secure=%s SameSite=Strict",
         cookie_secure,
     )
+    if get_authenticator().require_totp:
+        logger.info("TOTP second factor: REQUIRED on /api/auth")
+    elif get_authenticator().totp_configured:
+        logger.warning(
+            "TOTP secret configured but --require-totp / require_totp is off; "
+            "/api/auth will accept password alone."
+        )
     if not cookie_secure and not is_loopback_host(host):
         logger.warning(
             "Cookies will NOT have the Secure flag (--cookie-insecure or "

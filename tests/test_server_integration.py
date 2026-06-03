@@ -23,12 +23,14 @@ import sys
 import time
 
 import httpx
+import pyotp
 import pytest
 from websockets.legacy.client import connect
 
 pytestmark = pytest.mark.asyncio
 
 COOKIE_NAME = "tt_session"
+TOTP_SECRET = "JBSWY3DPEHPK3PXP"  # standard "Hello!" Base32 test secret
 
 
 def _free_port() -> int:
@@ -54,10 +56,13 @@ def _start_server(
     port: int,
     command: str = "bash --norc --noprofile",
     extra_args: list[str] | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> subprocess.Popen:
     env = os.environ.copy()
     env["TUNNELTERM_PASSWORD"] = "testpass"
     env["LOG_LEVEL"] = "WARNING"
+    if extra_env:
+        env.update(extra_env)
     args = [
         sys.executable, "-m", "tunnelterm",
         "--command", command,
@@ -79,16 +84,23 @@ def _start_server(
     return proc
 
 
-async def _login(port: int, password: str) -> tuple[int, dict, str | None]:
+async def _login(
+    port: int,
+    password: str,
+    totp: str | None = None,
+) -> tuple[int, dict, str | None]:
     """POST /api/auth; return (status, json, cookie-value-or-None)."""
+    body: dict = {"password": password}
+    if totp is not None:
+        body["totp"] = totp
     async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
-        r = await client.post("/api/auth", json={"password": password})
+        r = await client.post("/api/auth", json=body)
     token = r.cookies.get(COOKIE_NAME)
     try:
-        body = r.json()
+        body_json = r.json()
     except ValueError:
-        body = {}
-    return r.status_code, body, token
+        body_json = {}
+    return r.status_code, body_json, token
 
 
 async def test_auth_rejects_wrong_password() -> None:
@@ -490,3 +502,203 @@ async def test_refuses_nonloopback_without_origin_allowlist() -> None:
     stderr = (proc.stderr.read() if proc.stderr else b"").decode()
     assert rc == 2, f"expected exit code 2, got {rc}; stderr={stderr!r}"
     assert "non-loopback" in stderr.lower() or "allow" in stderr.lower(), stderr
+
+
+# ---------------------------------------------------------------------------
+# TOTP (RFC 6238) second-factor tests
+# ---------------------------------------------------------------------------
+
+
+async def test_totp_required_rejects_password_only() -> None:
+    """With TOTP required, password alone is rejected."""
+    port = _free_port()
+    proc = _start_server(
+        port,
+        extra_args=["--require-totp"],
+        extra_env={"TUNNELTERM_TOTP_SECRET": TOTP_SECRET},
+    )
+    try:
+        status, body, token = await _login(port, "testpass")
+        assert status == 401
+        assert body.get("error") == "invalid_credentials"
+        assert token is None
+    finally:
+        proc.terminate()
+        proc.wait(timeout=3)
+
+
+async def test_totp_required_rejects_wrong_code() -> None:
+    """Correct password + wrong TOTP code is rejected."""
+    port = _free_port()
+    proc = _start_server(
+        port,
+        extra_args=["--require-totp"],
+        extra_env={"TUNNELTERM_TOTP_SECRET": TOTP_SECRET},
+    )
+    try:
+        status, body, token = await _login(port, "testpass", totp="000000")
+        assert status == 401
+        assert body.get("error") == "invalid_credentials"
+        assert token is None
+    finally:
+        proc.terminate()
+        proc.wait(timeout=3)
+
+
+async def test_totp_required_accepts_valid_code() -> None:
+    """Correct password + correct TOTP code mints a session cookie."""
+    port = _free_port()
+    proc = _start_server(
+        port,
+        extra_args=["--require-totp"],
+        extra_env={"TUNNELTERM_TOTP_SECRET": TOTP_SECRET},
+    )
+    try:
+        code = pyotp.TOTP(TOTP_SECRET).now()
+        status, body, token = await _login(port, "testpass", totp=code)
+        assert status == 200, body
+        assert body == {"ok": True}
+        assert token is not None
+        assert len(token) >= 20
+
+        # The session cookie must actually work.
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
+            client.cookies.set(COOKIE_NAME, token)
+            r = await client.post("/api/verify")
+        assert r.status_code == 200
+        assert r.json() == {"ok": True}
+    finally:
+        proc.terminate()
+        proc.wait(timeout=3)
+
+
+async def test_totp_required_rejects_non_digit_code() -> None:
+    """Non-digit TOTP is rejected, never crashes."""
+    port = _free_port()
+    proc = _start_server(
+        port,
+        extra_args=["--require-totp"],
+        extra_env={"TUNNELTERM_TOTP_SECRET": TOTP_SECRET},
+    )
+    try:
+        status, body, token = await _login(port, "testpass", totp="abcdef")
+        assert status == 401
+        assert body.get("error") == "invalid_credentials"
+        assert token is None
+    finally:
+        proc.terminate()
+        proc.wait(timeout=3)
+
+
+async def test_totp_not_required_when_flag_absent() -> None:
+    """Secret in env + no --require-totp => password alone still works."""
+    port = _free_port()
+    proc = _start_server(
+        port,
+        extra_env={"TUNNELTERM_TOTP_SECRET": TOTP_SECRET},
+    )
+    try:
+        status, body, token = await _login(port, "testpass")
+        assert status == 200
+        assert token is not None
+    finally:
+        proc.terminate()
+        proc.wait(timeout=3)
+
+
+async def test_totp_refuses_to_start_when_required_but_no_secret() -> None:
+    """--require-totp without a secret must fail at startup, not silently degrade."""
+    port = _free_port()
+    env = os.environ.copy()
+    env["TUNNELTERM_PASSWORD"] = "testpass"
+    env["LOG_LEVEL"] = "WARNING"
+    env.pop("TUNNELTERM_TOTP_SECRET", None)
+    proc = subprocess.Popen(  # noqa: S603
+        [
+            sys.executable, "-m", "tunnelterm",
+            "--command", "bash --norc --noprofile",
+            "--port", str(port),
+            "--host", "127.0.0.1",
+            "--require-totp",
+        ],
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    rc = proc.wait(timeout=5)
+    stderr = (proc.stderr.read() if proc.stderr else b"").decode()
+    assert rc == 2, f"expected exit code 2, got {rc}; stderr={stderr!r}"
+    assert "totp" in stderr.lower(), stderr
+
+
+async def test_totp_refuses_to_start_with_invalid_secret() -> None:
+    """A malformed TOTP secret must fail at startup."""
+    port = _free_port()
+    env = os.environ.copy()
+    env["TUNNELTERM_PASSWORD"] = "testpass"
+    env["LOG_LEVEL"] = "WARNING"
+    env["TUNNELTERM_TOTP_SECRET"] = "not!valid!base32!!!"
+    proc = subprocess.Popen(  # noqa: S603
+        [
+            sys.executable, "-m", "tunnelterm",
+            "--command", "bash --norc --noprofile",
+            "--port", str(port),
+            "--host", "127.0.0.1",
+        ],
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    rc = proc.wait(timeout=5)
+    stderr = (proc.stderr.read() if proc.stderr else b"").decode()
+    assert rc == 2, f"expected exit code 2, got {rc}; stderr={stderr!r}"
+    assert "totp" in stderr.lower(), stderr
+
+
+async def test_auth_mode_endpoint_reports_require_totp() -> None:
+    """GET /api/auth/mode returns require_totp=true when TOTP is enforced."""
+    port = _free_port()
+    proc = _start_server(
+        port,
+        extra_args=["--require-totp"],
+        extra_env={"TUNNELTERM_TOTP_SECRET": TOTP_SECRET},
+    )
+    try:
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
+            r = await client.get("/api/auth/mode")
+        assert r.status_code == 200
+        assert r.json() == {"require_totp": True}
+    finally:
+        proc.terminate()
+        proc.wait(timeout=3)
+
+
+async def test_auth_mode_endpoint_reports_no_totp_by_default() -> None:
+    """GET /api/auth/mode returns require_totp=false when TOTP is not configured."""
+    port = _free_port()
+    proc = _start_server(port)
+    try:
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
+            r = await client.get("/api/auth/mode")
+        assert r.status_code == 200
+        assert r.json() == {"require_totp": False}
+    finally:
+        proc.terminate()
+        proc.wait(timeout=3)
+
+
+async def test_auth_mode_endpoint_secret_without_require() -> None:
+    """Secret configured but --require-totp absent => require_totp=false."""
+    port = _free_port()
+    proc = _start_server(
+        port,
+        extra_env={"TUNNELTERM_TOTP_SECRET": TOTP_SECRET},
+    )
+    try:
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
+            r = await client.get("/api/auth/mode")
+        assert r.status_code == 200
+        assert r.json() == {"require_totp": False}
+    finally:
+        proc.terminate()
+        proc.wait(timeout=3)
