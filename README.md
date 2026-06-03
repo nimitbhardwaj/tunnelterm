@@ -223,9 +223,16 @@ whether the server requires TOTP to a network observer.
 
 ### CSRF / CSWSH
 - `SameSite=Strict` blocks the cookie on cross-site requests.
-- An additional Origin allow-list is enforced on every POST and WebSocket
-  handshake. The server **refuses to start** on a non-loopback bind unless
-  `--allowed-origin` is given (or `--allow-any-origin` explicitly opted into).
+- An additional Origin allow-list is enforced on every state-changing
+  request (POST) and WebSocket handshake. The server **refuses to start**
+  on a non-loopback bind unless `--allowed-origin` is given (or
+  `--allow-any-origin` explicitly opted into).
+- Safe methods (`GET` / `HEAD` / `OPTIONS`) are exempt from the Origin
+  check. They have no side effects, and browsers don't send the `Origin`
+  header on same-origin GETs per the Fetch spec — enforcing the allow-list
+  there would 403 the login form's `GET /api/auth/mode` probe (which
+  has no `Origin` header) and leave the TOTP field hidden on initial
+  page load.
 
 ### Brute force / abuse
 - 5 failed `/api/auth` attempts from one IP within 15 min → 5 min lockout.

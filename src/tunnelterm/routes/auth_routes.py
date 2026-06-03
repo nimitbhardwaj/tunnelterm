@@ -39,13 +39,23 @@ router = APIRouter(prefix="/api")
 
 
 def _origin_check_ok(request: Request) -> bool:
-    """Reject cross-site POSTs based on the configured allow-list.
+    """Reject cross-site state-changing requests based on the configured allow-list.
 
     SameSite=Strict already blocks third-party form submits and XHRs from
     setting the cookie, but the request itself can still arrive (e.g.
     fetched without credentials). We additionally validate ``Origin`` /
     ``Referer`` to keep error responses from leaking.
+
+    Safe methods (GET, HEAD, OPTIONS) are exempt: they have no side effects,
+    and per the Fetch spec browsers do NOT send an ``Origin`` header on
+    same-origin GETs -- only on cross-origin requests and on
+    state-changing methods. Enforcing the allow-list on same-origin reads
+    would 403 the login form's ``/api/auth/mode`` probe (which has no
+    Origin header in the browser), leaving the TOTP field hidden until
+    the user makes a first failed submit.
     """
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return True
     allowed: list[str] = list(getattr(request.app.state, "allowed_origins", []) or [])
     allow_any: bool = bool(getattr(request.app.state, "allow_any_origin", False))
     if allow_any:

@@ -702,3 +702,120 @@ async def test_auth_mode_endpoint_secret_without_require() -> None:
     finally:
         proc.terminate()
         proc.wait(timeout=3)
+
+
+# ---------------------------------------------------------------------------
+# Origin-allow-list + safe-method exemption regression tests
+# (see routes/auth_routes.py::_origin_check_ok).
+#
+# The bug: browsers do NOT send the Origin header on same-origin GETs (per
+# the Fetch spec, Origin is only sent on cross-origin or state-changing
+# requests). When an operator configures --allowed-origin, the same-origin
+# GET to /api/auth/mode arrived with no Origin header and was 403'd by
+# origin_allowed(None, allow_list) -> False. The JS authMode() probe then
+# silently fell back to {require_totp: false} and the TOTP field stayed
+# hidden on initial page load. The fix exempts safe methods (GET/HEAD/
+# OPTIONS) from the origin check.
+# ---------------------------------------------------------------------------
+
+PROD_ORIGIN = "https://nangadaaku-openfang.duckdns.org"
+
+
+async def test_auth_mode_get_works_with_allowed_origin_no_origin_header() -> None:
+    """GET /api/auth/mode from a same-origin browser (no Origin header)
+    must succeed when --allowed-origin is configured. Regression for the
+    bug where the TOTP field stayed hidden until a failed submit."""
+    port = _free_port()
+    proc = _start_server(
+        port,
+        extra_env={"TUNNELTERM_TOTP_SECRET": TOTP_SECRET},
+        extra_args=["--require-totp", "--allowed-origin", PROD_ORIGIN],
+    )
+    try:
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
+            r = await client.get("/api/auth/mode")
+        assert r.status_code == 200, r.text
+        assert r.json() == {"require_totp": True}
+    finally:
+        proc.terminate()
+        proc.wait(timeout=3)
+
+
+async def test_auth_mode_get_works_with_bad_origin() -> None:
+    """GET /api/auth/mode with a non-allow-listed Origin is also fine --
+    safe methods are exempt from the check entirely."""
+    port = _free_port()
+    proc = _start_server(
+        port,
+        extra_args=["--allowed-origin", PROD_ORIGIN],
+    )
+    try:
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
+            r = await client.get(
+                "/api/auth/mode", headers={"Origin": "https://evil.example.com"}
+            )
+        assert r.status_code == 200
+    finally:
+        proc.terminate()
+        proc.wait(timeout=3)
+
+
+async def test_post_auth_still_rejects_missing_origin_with_allowed_origin() -> None:
+    """The fix must not weaken POST origin enforcement: a POST /api/auth
+    with no Origin header is still 403'd when --allowed-origin is set."""
+    port = _free_port()
+    proc = _start_server(
+        port,
+        extra_args=["--allowed-origin", PROD_ORIGIN],
+    )
+    try:
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
+            r = await client.post("/api/auth", json={"password": "x"})
+        assert r.status_code == 403
+        assert r.json().get("error") == "origin_not_allowed"
+    finally:
+        proc.terminate()
+        proc.wait(timeout=3)
+
+
+async def test_post_auth_still_rejects_bad_origin_with_allowed_origin() -> None:
+    """POST /api/auth with a non-allow-listed Origin is still 403'd."""
+    port = _free_port()
+    proc = _start_server(
+        port,
+        extra_args=["--allowed-origin", PROD_ORIGIN],
+    )
+    try:
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
+            r = await client.post(
+                "/api/auth",
+                json={"password": "x"},
+                headers={"Origin": "https://evil.example.com"},
+            )
+        assert r.status_code == 403
+        assert r.json().get("error") == "origin_not_allowed"
+    finally:
+        proc.terminate()
+        proc.wait(timeout=3)
+
+
+async def test_post_auth_accepts_allow_listed_origin() -> None:
+    """POST /api/auth with an allow-listed Origin reaches the password
+    check (returns 401 invalid_password, not 403 origin_not_allowed)."""
+    port = _free_port()
+    proc = _start_server(
+        port,
+        extra_args=["--allowed-origin", PROD_ORIGIN],
+    )
+    try:
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
+            r = await client.post(
+                "/api/auth",
+                json={"password": "wrong"},
+                headers={"Origin": PROD_ORIGIN},
+            )
+        assert r.status_code == 401
+        assert r.json().get("error") == "invalid_password"
+    finally:
+        proc.terminate()
+        proc.wait(timeout=3)
